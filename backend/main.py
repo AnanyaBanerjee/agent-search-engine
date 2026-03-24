@@ -133,7 +133,7 @@ app.add_middleware(
 )
 
 # Serve the frontend
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
