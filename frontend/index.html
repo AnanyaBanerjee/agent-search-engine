@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Search Engine</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Agent Search Engine</h1>
+      <p class="subtitle">A2A-compatible registry &amp; semantic search for AI agents</p>
+    </div>
+  </header>
+
+  <main>
+    <!-- Search bar -->
+    <section class="search-section">
+      <div class="search-box">
+        <input
+          id="query"
+          type="text"
+          placeholder="Describe a task… e.g. &quot;summarise PDF documents&quot;"
+          autocomplete="off"
+        />
+        <button id="search-btn" onclick="doSearch()">Search</button>
+      </div>
+      <div class="tag-filter">
+        <label>Filter by tag:</label>
+        <input id="tag-input" type="text" placeholder="e.g. nlp, vision, code" />
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section id="results-section" class="hidden">
+      <h2 id="results-title"></h2>
+      <div id="results-list"></div>
+    </section>
+
+    <!-- Register -->
+    <section class="register-section">
+      <details>
+        <summary>Register a new agent</summary>
+        <div class="register-inner">
+          <p>Paste your A2A agent card JSON below, or enter your agent's base URL.</p>
+          <div class="register-tabs">
+            <button class="tab active" onclick="switchTab('json')">Paste JSON</button>
+            <button class="tab" onclick="switchTab('url')">Fetch from URL</button>
+          </div>
+          <div id="tab-json">
+            <textarea id="card-json" rows="12" placeholder='{
+  "schemaVersion": "1.0",
+  "humanReadableId": "myorg/my-agent",
+  "name": "My Agent",
+  "description": "What my agent does",
+  "url": "https://my-agent.example.com",
+  "agentVersion": "1.0.0",
+  "provider": { "name": "My Org" },
+  "capabilities": { "a2aVersion": "1.0" },
+  "authSchemes": [{ "type": "none" }],
+  "skills": [
+    {
+      "id": "my-skill",
+      "name": "My Skill",
+      "description": "Describe the skill",
+      "tags": ["tag1", "tag2"]
+    }
+  ]
+}'></textarea>
+          </div>
+          <div id="tab-url" class="hidden">
+            <input id="agent-url" type="url" placeholder="https://my-agent.example.com" />
+            <p class="hint">The engine will fetch <code>/.well-known/agent.json</code> from this URL.</p>
+          </div>
+          <button onclick="registerAgent()">Register</button>
+          <div id="register-msg"></div>
+        </div>
+      </details>
+    </section>
+
+    <!-- All agents -->
+    <section class="agents-section">
+      <div class="section-header">
+        <h2>All Registered Agents</h2>
+        <button onclick="loadAgents()">Refresh</button>
+      </div>
+      <div id="agents-list"><em>Loading…</em></div>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/docs" target="_blank">API Docs</a> ·
+    <a href="/.well-known/agent.json" target="_blank">Agent Card</a>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

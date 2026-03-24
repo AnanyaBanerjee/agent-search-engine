@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "1.0",
+  "humanReadableId": "example/pdf-summariser",
+  "name": "PDF Summariser Agent",
+  "description": "Reads PDF documents and returns structured summaries, key points, and action items. Supports multi-page PDFs up to 200 pages.",
+  "url": "https://pdf-summariser.example.com",
+  "agentVersion": "1.2.0",
+  "provider": {
+    "name": "Example Corp",
+    "url": "https://example.com"
+  },
+  "capabilities": {
+    "a2aVersion": "1.0",
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "authSchemes": [
+    { "type": "apiKey", "description": "Pass your API key as a Bearer token" }
+  ],
+  "defaultInputModes": ["text/plain", "application/pdf"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "skills": [
+    {
+      "id": "summarise-pdf",
+      "name": "Summarise PDF",
+      "description": "Takes a PDF URL or base64-encoded PDF and returns a structured summary with title, key points, and a short abstract.",
+      "tags": ["pdf", "summarise", "document", "nlp"],
+      "examples": [
+        "Summarise this PDF: https://example.com/report.pdf",
+        "Give me the key points from this document"
+      ]
+    },
+    {
+      "id": "extract-action-items",
+      "name": "Extract Action Items",
+      "description": "Scans a PDF for tasks, deadlines, and action items and returns them as a structured list.",
+      "tags": ["pdf", "tasks", "extraction", "action-items"],
+      "examples": [
+        "What are the action items in this meeting notes PDF?"
+      ]
+    }
+  ],
+  "tags": ["pdf", "document", "summarisation", "nlp"],
+  "documentationUrl": "https://pdf-summariser.example.com/docs",
+  "lastUpdated": "2026-03-01T00:00:00Z"
+}

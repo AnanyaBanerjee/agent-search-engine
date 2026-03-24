@@ -1,0 +1,210 @@
+/* ============================================================
+   Agent Search Engine — styles
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --border:   #2a2d3e;
+  --accent:   #6c63ff;
+  --accent2:  #4ecdc4;
+  --text:     #e2e8f0;
+  --muted:    #8892a4;
+  --radius:   10px;
+  --shadow:   0 4px 24px rgba(0,0,0,0.35);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ---- Header ---- */
+header {
+  background: linear-gradient(135deg, #1a1d27 0%, #12172a 100%);
+  border-bottom: 1px solid var(--border);
+  padding: 2.5rem 1rem;
+  text-align: center;
+}
+.header-inner { max-width: 700px; margin: 0 auto; }
+header h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.subtitle { color: var(--muted); margin-top: .4rem; }
+
+/* ---- Layout ---- */
+main { max-width: 860px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+
+section { margin-bottom: 2.5rem; }
+
+/* ---- Search ---- */
+.search-section { text-align: center; }
+
+.search-box {
+  display: flex; gap: .5rem; max-width: 660px; margin: 0 auto 1rem;
+}
+
+input[type="text"], input[type="url"], textarea {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: .65rem 1rem;
+  font-size: 15px;
+  outline: none;
+  transition: border-color .2s;
+  width: 100%;
+}
+input:focus, textarea:focus { border-color: var(--accent); }
+
+.search-box input { flex: 1; font-size: 16px; padding: .75rem 1.2rem; }
+
+button {
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  padding: .65rem 1.4rem;
+  transition: opacity .15s, transform .1s;
+  white-space: nowrap;
+}
+button:hover { opacity: .88; }
+button:active { transform: scale(.97); }
+
+.tag-filter {
+  display: flex; align-items: center; gap: .6rem;
+  max-width: 660px; margin: 0 auto;
+  color: var(--muted); font-size: 13px;
+}
+.tag-filter input { max-width: 260px; }
+
+/* ---- Results ---- */
+.hidden { display: none !important; }
+
+#results-title { font-size: 1.1rem; color: var(--muted); margin-bottom: 1rem; }
+
+.agent-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem 1.4rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+  transition: border-color .2s;
+}
+.agent-card:hover { border-color: var(--accent); }
+
+.card-header { display: flex; align-items: flex-start; gap: .8rem; margin-bottom: .6rem; }
+.card-rank {
+  background: var(--accent);
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 700;
+  flex-shrink: 0;
+}
+.card-title { font-size: 1.05rem; font-weight: 600; }
+.card-id { color: var(--muted); font-size: 12px; font-family: monospace; }
+.card-score {
+  margin-left: auto;
+  background: rgba(108,99,255,.18);
+  border-radius: 6px;
+  color: var(--accent2);
+  font-size: 12px; font-weight: 600;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.card-desc { color: var(--muted); font-size: 14px; margin-bottom: .7rem; }
+
+.card-meta { font-size: 12px; color: var(--muted); }
+.card-meta a { color: var(--accent2); text-decoration: none; }
+.card-meta a:hover { text-decoration: underline; }
+
+.tags { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .6rem; }
+.tag {
+  background: rgba(78,205,196,.12);
+  border: 1px solid rgba(78,205,196,.25);
+  border-radius: 4px;
+  color: var(--accent2);
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+.skills { margin-top: .8rem; }
+.skills summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.skill-item { margin-top: .5rem; padding: .5rem .8rem; background: rgba(255,255,255,.03); border-radius: 6px; }
+.skill-name { font-weight: 600; font-size: 13px; }
+.skill-desc { font-size: 12px; color: var(--muted); }
+
+/* ---- Register ---- */
+.register-section details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.register-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 1rem 1.4rem;
+  list-style: none;
+}
+.register-section summary::-webkit-details-marker { display: none; }
+.register-section summary::before { content: '+ '; color: var(--accent); }
+details[open] summary::before { content: '− '; }
+
+.register-inner { padding: .5rem 1.4rem 1.4rem; }
+.register-inner p { color: var(--muted); font-size: 14px; margin-bottom: .8rem; }
+
+.register-tabs { display: flex; gap: .4rem; margin-bottom: .8rem; }
+.tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-weight: 500;
+  padding: .35rem .9rem;
+}
+.tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+textarea { resize: vertical; font-family: monospace; font-size: 13px; }
+
+.hint { font-size: 12px !important; color: var(--muted); }
+.hint code { color: var(--accent2); }
+
+#register-msg {
+  margin-top: .7rem; font-size: 14px; padding: .5rem .8rem;
+  border-radius: 6px;
+}
+#register-msg.success { background: rgba(78,205,196,.12); color: var(--accent2); }
+#register-msg.error   { background: rgba(255,80,80,.12);  color: #ff8080; }
+
+/* ---- All agents ---- */
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.section-header h2 { font-size: 1.15rem; }
+.section-header button { font-size: 13px; padding: .4rem .9rem; }
+
+#agents-list em { color: var(--muted); }
+
+/* ---- Footer ---- */
+footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  padding: 1.2rem;
+  text-align: center;
+}
+footer a { color: var(--accent2); text-decoration: none; margin: 0 .3rem; }
+footer a:hover { text-decoration: underline; }

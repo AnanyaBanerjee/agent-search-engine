@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+env/
+venv/
+
+# Database & model cache
+backend/agents.db
+.fastembed_cache/
+*.db
+
+# macOS
+.DS_Store
+
+# IDEs
+.cursor/
+.vscode/
