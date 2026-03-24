@@ -8,22 +8,25 @@ The Agent Search Engine is an **A2A-protocol-native registry** — it is itself 
 ┌──────────────────────────────────────────────────────────────────┐
 │                     Agent Search Engine                          │
 │                                                                  │
-│  ┌────────────┐   ┌─────────────┐   ┌──────────────────────┐   │
-│  │  FastAPI   │   │   SQLite    │   │  fastembed (ONNX)    │   │
-│  │  (HTTP)    │──▶│  agents.db  │   │  BGE-small-en-v1.5   │   │
-│  └────────────┘   └─────────────┘   └──────────────────────┘   │
-│       │                                         │                │
-│  ┌────▼──────────────────────────────────────── ▼ ──────────┐  │
-│  │          Cosine Similarity Search (numpy, in-RAM)         │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  Endpoints                                                       │
-│  ├── GET  /.well-known/agent.json   ← own A2A agent card        │
-│  ├── POST /                         ← A2A JSON-RPC 2.0          │
-│  ├── POST /register                 ← submit an agent card      │
-│  ├── POST /search                   ← semantic search (REST)    │
-│  ├── GET  /agents                   ← list all agents           │
-│  └── GET  /ui                       ← web UI (static files)     │
+│  ┌────────────┐   ┌──────────────────┐   ┌──────────────────────┐   │
+│  │  FastAPI   │   │ SQLite (local) /  │   │  fastembed (ONNX)    │   │
+│  │  (HTTP)    │──▶│ PostgreSQL (prod) │   │  BGE-small-en-v1.5   │   │
+│  └────────────┘   └──────────────────┘   └──────────────────────┘   │
+│       │                                               │               │
+│  ┌────▼──────────────────────────────────────────── ▼ ───────────┐  │
+│  │             Cosine Similarity Search (numpy, in-RAM)           │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                       │
+│  Endpoints                                                            │
+│  ├── GET  /.well-known/agent.json   ← own A2A agent card             │
+│  ├── POST /                         ← A2A JSON-RPC 2.0               │
+│  ├── POST /register                 ← submit an agent card           │
+│  ├── POST /search                   ← semantic search (REST)         │
+│  ├── GET  /agents                   ← list all agents                │
+│  ├── GET  /agents/{id}              ← get a single agent card        │
+│  ├── DELETE /agents/{id}            ← remove an agent                │
+│  ├── GET  /health                   ← health check                   │
+│  └── GET  /ui                       ← web UI (static files)          │
 └──────────────────────────────────────────────────────────────────┘
 
          ▲ A2A JSON-RPC           ▲ REST / browser
@@ -47,17 +50,24 @@ The Agent Search Engine is an **A2A-protocol-native registry** — it is itself 
 
 ---
 
-### SQLite (`agents.db`)
+### Storage — SQLite (local) / PostgreSQL (production)
 
-**What:** An embedded, file-based relational database.
+**What:** Dual-backend store. `database.py` auto-selects at startup:
+- `DATABASE_URL` set → PostgreSQL via `psycopg2` (Railway / any hosted Postgres)
+- `DATABASE_URL` unset → SQLite (`agents.db`, file-based)
 
-**Why:**
-- **No infrastructure.** No Postgres server, no Docker, no connection strings. The database is a single file that travels with the repo. This matters a lot in an early-stage project — the fewer moving parts, the faster you can iterate.
+The public API (`upsert_agent`, `get_agent`, `list_all_agents`, `load_vector_index`, `cosine_search`) is identical in both modes — nothing else in the codebase knows which backend is active.
+
+**Why SQLite for local dev:**
+- **No infrastructure.** No Postgres server, no Docker, no connection strings. The database is a single file that travels with the repo.
 - **Sufficient scale.** A registry of AI agents is not a high-write-throughput workload. SQLite handles thousands of agents and hundreds of concurrent reads comfortably.
-- **Persistence without complexity.** Agent cards survive restarts, and SQLite's WAL mode handles concurrent reads safely.
 
-**When to migrate away:**
-If the registry grows to tens of thousands of agents with heavy concurrent writes, or if you need to run multiple server replicas, switch to PostgreSQL (with `pgvector` for native vector search). The `database.py` abstraction layer makes this swap straightforward.
+**Why PostgreSQL for production:**
+- **Persistence across deploys.** Railway ephemeral filesystems lose SQLite on every redeploy; a managed Postgres add-on survives.
+- **Concurrent writes.** Multi-replica deployments and Railway's zero-downtime restarts need a network-accessible database.
+
+**When to extend further:**
+If you need vector-native indexing (ANN search, filtered queries at scale), add `pgvector` to the existing Postgres instance and replace the in-RAM numpy search. The `database.py` abstraction keeps that change contained.
 
 ---
 
@@ -78,7 +88,7 @@ If you need GPU inference at scale (millions of embeddings/day), switch to a hos
 
 ### Cosine Similarity (numpy, in-RAM)
 
-**What:** All agent embeddings are loaded from SQLite into a numpy matrix on every search, and cosine similarity is computed in one matrix multiply.
+**What:** All agent embeddings are loaded from the database (SQLite or PostgreSQL) into a numpy matrix on every search, and cosine similarity is computed in one matrix multiply.
 
 **Why:**
 - **Zero extra dependencies.** No vector database (Pinecone, Weaviate, Qdrant) to manage.
@@ -115,7 +125,7 @@ Agent  →  POST /register { agent_card: {...} }
         embed_agent_card()   →  fastembed ONNX  →  384-dim float32 vector
               │
               ▼
-        SQLite: INSERT INTO agents (id, card_json, embedding)
+        DB: INSERT INTO agents (id, card_json, embedding)  ← SQLite or PostgreSQL
 ```
 
 ### Search (REST)
@@ -127,7 +137,7 @@ Client  →  POST /search { query: "summarise PDFs", top_k: 5 }
          embed_text(query)   →  fastembed ONNX  →  384-dim query vector
                │
                ▼
-         load_vector_index()  →  all embeddings from SQLite into numpy matrix
+         load_vector_index()  →  all embeddings from DB into numpy matrix
                │
                ▼
          cosine_similarity(query_vec, matrix)  →  ranked (agent_id, score) list
@@ -161,19 +171,22 @@ Agent  →  POST / { jsonrpc:"2.0", method:"message/send", params:{ message:{ pa
 backend/
   main.py          App entry point, FastAPI routes, lifespan hooks
   models.py        Pydantic models — A2A Agent Card schema + JSON-RPC types
-  database.py      SQLite read/write + numpy cosine search
+  database.py      Dual-backend store (SQLite local / PostgreSQL prod) + numpy cosine search
   search.py        fastembed model loader + agent card text builder
   a2a_handler.py   JSON-RPC 2.0 dispatcher (message/send, tasks/get, etc.)
   requirements.txt Pinned dependencies
+  runtime.txt      Python version pin for Railway/Nixpacks
 
-frontend/
-  index.html       Search UI, register form, agent list
-  style.css        Dark theme
-  app.js           Fetch calls to /search, /register, /agents
+  frontend/        Served at /ui (moved inside backend/ for Railway packaging)
+    index.html     Search UI, register form, agent list
+    style.css      Dark theme
+    app.js         Fetch calls to /search, /register, /agents
 
 example-agents/
   pdf-summariser.json   Example A2A agent card
   code-reviewer.json    Example A2A agent card
+
+railway.json       Railway deployment config (builder, start command, restart policy)
 ```
 
 ---
@@ -182,7 +195,7 @@ example-agents/
 
 | Concern | Current approach | When to upgrade | Upgrade path |
 |---|---|---|---|
-| Storage | SQLite | >50k agents or multi-replica | PostgreSQL |
+| Storage | SQLite (local) + PostgreSQL (prod) | Multi-region / high write throughput | Managed Postgres with pgvector |
 | Vector search | numpy cosine | >50k agents or <10ms SLA | pgvector or Qdrant |
 | Embeddings | fastembed ONNX (local) | GPU scale / multilingual | Hosted API (Cohere, Voyage) |
 | Auth | None (open registry) | Production / private registry | API keys or OAuth2 per A2A spec |
