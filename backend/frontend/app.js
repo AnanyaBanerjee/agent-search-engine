@@ -139,7 +139,13 @@ async function registerAgent() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    if (!res.ok) {
+      // FastAPI validation errors come back as an array in data.detail
+      const detail = Array.isArray(data.detail)
+        ? data.detail.map(e => `${e.loc?.slice(-1)[0] ?? 'field'}: ${e.msg}`).join('\n')
+        : (data.detail || JSON.stringify(data));
+      throw new Error(detail);
+    }
     msgEl.className = 'success';
     msgEl.textContent = `✓ ${data.message} (id: ${data.id})`;
     loadAgents();

@@ -200,6 +200,14 @@ async def register_agent(req: RegisterRequest):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to fetch agent card: {exc}")
 
+    # Fill optional fields that agents commonly omit
+    if not card.humanReadableId:
+        card.humanReadableId = card.name.lower().replace(" ", "-")
+    if not card.provider:
+        card.provider = AgentProvider(name="Unknown")
+    if not card.agentVersion and card.version:
+        card.agentVersion = card.version
+
     agent_id = make_agent_id(card)
     embedding = embed_agent_card(card.model_dump())
     upsert_agent(agent_id, card, embedding)

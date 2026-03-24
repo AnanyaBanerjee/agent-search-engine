@@ -44,12 +44,13 @@ class AgentSkill(BaseModel):
 class AgentCard(BaseModel):
     """Full A2A Agent Card as published at /.well-known/agent.json"""
     schemaVersion: str = "1.0"
-    humanReadableId: str                        # e.g. "myorg/my-agent"
+    humanReadableId: Optional[str] = None       # auto-generated from name if omitted
     name: str
     description: str
     url: str                                    # A2A JSON-RPC endpoint
     agentVersion: str = "1.0.0"
-    provider: AgentProvider
+    version: Optional[str] = None              # alias some agents use instead of agentVersion
+    provider: Optional[AgentProvider] = None
     capabilities: AgentCapabilities = AgentCapabilities()
     authSchemes: list[AuthScheme] = [AuthScheme(type="none")]
     defaultInputModes: list[str] = ["text/plain"]
