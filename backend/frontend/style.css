@@ -184,6 +184,10 @@ textarea { resize: vertical; font-family: monospace; font-size: 13px; }
 .hint { font-size: 12px !important; color: var(--muted); }
 .hint code { color: var(--accent2); }
 
+.api-key-row { display: flex; align-items: center; gap: .6rem; margin: .8rem 0; }
+.api-key-row label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.api-key-row input { flex: 1; }
+
 #register-msg {
   margin-top: .7rem; font-size: 14px; padding: .5rem .8rem;
   border-radius: 6px;

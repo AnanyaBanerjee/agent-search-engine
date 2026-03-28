@@ -132,10 +132,14 @@ async function registerAgent() {
     body = { agent_card: _minimalCard(), card_url: url };
   }
 
+  const apiKey = $('api-key').value.trim();
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['X-Api-Key'] = apiKey;
+
   try {
     const res = await fetch(`${API}/register`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
     const data = await res.json();
@@ -178,11 +182,12 @@ async function loadAgents() {
   try {
     const res = await fetch(`${API}/agents`);
     const data = await res.json();
-    if (!data.length) {
+    const agents = data.agents ?? data;   // handle both paginated and legacy response
+    if (!agents.length) {
       list.innerHTML = '<em style="color:var(--muted)">No agents registered yet.</em>';
       return;
     }
-    list.innerHTML = data
+    list.innerHTML = agents
       .map(r => buildAgentCard({ id: r.id, score: 1, agent_card: r.agent_card, _rank: '' }, false))
       .join('');
   } catch (e) {

@@ -73,6 +73,10 @@
             <input id="agent-url" type="url" placeholder="https://my-agent.example.com" />
             <p class="hint">The engine will fetch <code>/.well-known/agent.json</code> from this URL.</p>
           </div>
+          <div class="api-key-row">
+            <label for="api-key">API Key</label>
+            <input id="api-key" type="password" placeholder="Leave blank if registry is open" />
+          </div>
           <button onclick="registerAgent()">Register</button>
           <div id="register-msg"></div>
         </div>
