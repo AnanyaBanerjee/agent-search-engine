@@ -6,17 +6,22 @@ REST endpoints:
   POST /                              A2A JSON-RPC 2.0 endpoint
   POST /register                      Register an agent card  [API key required]
   GET  /agents                        List all registered agents (paginated)
-  GET  /agents/{id}                   Get a single agent card
+  GET  /agents/{id}                   Get a single agent card + health status
+  GET  /agents/{id}/history           Agent card version history
   DELETE /agents/{id}                 Remove an agent  [API key required]
+  POST /agents/{id}/click             Log an agent click (analytics)
   POST /search                        Semantic search (REST convenience)
+  GET  /analytics                     Search & click analytics  [API key required]
   GET  /health                        Health check
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -33,10 +38,22 @@ from a2a_handler import handle_jsonrpc
 from database import (
     cosine_search,
     delete_agent,
+    delete_stale_agents,
+    diff_cards,
     get_agent,
+    get_agent_raw,
+    get_agent_versions,
+    get_agent_with_health,
+    get_all_agent_urls_and_ids,
+    get_analytics,
     init_db,
     list_all_agents,
+    list_all_agents_with_health,
+    log_agent_click,
+    log_search,
     make_agent_id,
+    save_agent_version,
+    update_agent_health,
     upsert_agent,
 )
 from models import (
@@ -56,25 +73,76 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Config from environment
+# ---------------------------------------------------------------------------
+
+_REGISTRY_API_KEY: str | None = os.environ.get("REGISTRY_API_KEY")
+HEALTH_CHECK_INTERVAL: int = int(os.environ.get("HEALTH_CHECK_INTERVAL_SECONDS", 300))
+STALE_AFTER_DAYS: int = int(os.environ.get("STALE_AFTER_DAYS", 3))
+DEREGISTER_AFTER_DAYS: int = int(os.environ.get("DEREGISTER_AFTER_DAYS", 7))
+
+# ---------------------------------------------------------------------------
 # Security
 # ---------------------------------------------------------------------------
 
-# Set REGISTRY_API_KEY in your environment / Railway env vars.
-# If unset, write endpoints are open (convenient for local dev).
-_REGISTRY_API_KEY: str | None = os.environ.get("REGISTRY_API_KEY")
-
-
 def require_api_key(x_api_key: str = Header(default=None)):
-    """Dependency — rejects requests that don't carry the correct API key."""
     if _REGISTRY_API_KEY and x_api_key != _REGISTRY_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
-
 
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
 
 limiter = Limiter(key_func=get_remote_address)
+
+# ---------------------------------------------------------------------------
+# Health monitor background task
+# ---------------------------------------------------------------------------
+
+async def _health_monitor_loop() -> None:
+    """Ping every registered agent periodically, update status, auto-deregister stale ones."""
+    while True:
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+        try:
+            now = datetime.now(timezone.utc)
+            deregister_cutoff = (now - timedelta(days=DEREGISTER_AFTER_DAYS)).isoformat()
+            stale_cutoff = (now - timedelta(days=STALE_AFTER_DAYS)).isoformat()
+
+            deleted_ids = delete_stale_agents(deregister_cutoff)
+            for aid in deleted_ids:
+                logger.info("Auto-deregistered stale agent: %s", aid)
+
+            agents = get_all_agent_urls_and_ids()
+            deleted_set = set(deleted_ids)
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                for agent in agents:
+                    if agent["id"] in deleted_set or not agent["url"]:
+                        continue
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    try:
+                        resp = await client.get(agent["url"])
+                        is_online = resp.status_code < 500
+                    except Exception:
+                        is_online = False
+
+                    last_seen = agent["last_seen_online"]
+                    if is_online:
+                        new_status = "online"
+                        new_last_seen = now_iso
+                    else:
+                        new_last_seen = last_seen
+                        if last_seen and last_seen < stale_cutoff:
+                            new_status = "stale"
+                        else:
+                            new_status = "offline"
+
+                    update_agent_health(agent["id"], new_status, now_iso, new_last_seen)
+
+            logger.info("Health check complete: %d agents checked, %d auto-deregistered.",
+                        len(agents), len(deleted_ids))
+        except Exception as exc:
+            logger.error("Health monitor error: %s", exc)
 
 # ---------------------------------------------------------------------------
 # This search engine's own A2A agent card
@@ -139,8 +207,18 @@ async def lifespan(app: FastAPI):
         logger.info("Registry write endpoints are protected by API key.")
     else:
         logger.warning("REGISTRY_API_KEY is not set — write endpoints are open.")
+    task = asyncio.create_task(_health_monitor_loop())
+    logger.info(
+        "Health monitor started (interval=%ds, stale=%dd, deregister=%dd).",
+        HEALTH_CHECK_INTERVAL, STALE_AFTER_DAYS, DEREGISTER_AFTER_DAYS,
+    )
     logger.info("Agent Search Engine ready.")
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +242,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve the frontend
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 if FRONTEND_DIR.exists():
     app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
@@ -176,17 +253,12 @@ if FRONTEND_DIR.exists():
 
 @app.get("/.well-known/agent.json", tags=["A2A"])
 async def agent_card():
-    """Return this engine's own A2A agent card."""
     return OWN_CARD.model_dump()
 
 
 @app.post("/", tags=["A2A"])
 @limiter.limit("30/minute")
 async def a2a_jsonrpc(request: Request):
-    """
-    A2A JSON-RPC 2.0 endpoint.
-    Other agents send message/send, tasks/get, tasks/cancel, or ping here.
-    """
     try:
         raw = await request.json()
     except Exception:
@@ -222,11 +294,8 @@ async def a2a_jsonrpc(request: Request):
 async def register_agent(req: RegisterRequest):
     """
     Submit an A2A agent card to be indexed.
-
-    Either supply `agent_card` directly, or provide `card_url` and the engine
-    will fetch the card from `<card_url>/.well-known/agent.json`.
-
-    Requires `X-Api-Key` header when `REGISTRY_API_KEY` is configured.
+    Diffs against the existing card and saves a version snapshot if anything changed.
+    Requires X-Api-Key header when REGISTRY_API_KEY is configured.
     """
     card = req.agent_card
 
@@ -240,7 +309,6 @@ async def register_agent(req: RegisterRequest):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to fetch agent card: {exc}")
 
-    # Fill optional fields that agents commonly omit
     if not card.humanReadableId:
         card.humanReadableId = card.name.lower().replace(" ", "-")
     if not card.provider:
@@ -249,8 +317,20 @@ async def register_agent(req: RegisterRequest):
         card.agentVersion = card.version
 
     agent_id = make_agent_id(card)
-    embedding = embed_agent_card(card.model_dump())
-    upsert_agent(agent_id, card, embedding)
+
+    # Versioning: diff against existing card before overwriting
+    try:
+        old_card_dict = get_agent_raw(agent_id)
+        embedding = embed_agent_card(card.model_dump())
+        upsert_agent(agent_id, card, embedding)
+        if old_card_dict is not None:
+            diff = diff_cards(old_card_dict, card.model_dump())
+            if diff:
+                save_agent_version(agent_id, card.model_dump_json(), diff)
+                logger.info("Saved version for agent %s (%d field(s) changed)", agent_id, len(diff))
+    except Exception as exc:
+        logger.error("Error during registration of %s: %s", agent_id, exc)
+        raise HTTPException(status_code=500, detail="Registration failed")
 
     logger.info("Registered agent: %s (%s)", agent_id, card.name)
     return {"id": agent_id, "message": f"Agent '{card.name}' registered successfully."}
@@ -263,7 +343,7 @@ async def list_agents(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    all_agents = list_all_agents()
+    all_agents = list_all_agents_with_health()
     return {
         "total": len(all_agents),
         "skip": skip,
@@ -272,13 +352,22 @@ async def list_agents(
     }
 
 
+@app.get("/agents/{agent_id}/history", tags=["Registry"], summary="Agent card version history")
+@limiter.limit("30/minute")
+async def agent_history(request: Request, agent_id: str):
+    if get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    versions = get_agent_versions(agent_id)
+    return {"id": agent_id, "versions": versions}
+
+
 @app.get("/agents/{agent_id}", tags=["Registry"], summary="Get a single agent card")
 @limiter.limit("60/minute")
 async def get_agent_endpoint(request: Request, agent_id: str):
-    card = get_agent(agent_id)
-    if card is None:
+    result = get_agent_with_health(agent_id)
+    if result is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return {"id": agent_id, "agent_card": card.model_dump()}
+    return result
 
 
 @app.delete(
@@ -288,10 +377,36 @@ async def get_agent_endpoint(request: Request, agent_id: str):
     dependencies=[Depends(require_api_key)],
 )
 async def remove_agent(agent_id: str):
-    """Requires `X-Api-Key` header when `REGISTRY_API_KEY` is configured."""
     if not delete_agent(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"message": f"Agent '{agent_id}' removed."}
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+@app.post("/agents/{agent_id}/click", tags=["Analytics"], summary="Log an agent click")
+@limiter.limit("60/minute")
+async def click_agent(request: Request, agent_id: str):
+    if get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    try:
+        log_agent_click(agent_id)
+    except Exception as exc:
+        logger.warning("Failed to log click for %s: %s", agent_id, exc)
+    return {"message": "click recorded"}
+
+
+@app.get(
+    "/analytics",
+    tags=["Analytics"],
+    summary="Search and click analytics",
+    dependencies=[Depends(require_api_key)],
+)
+async def analytics():
+    """Top queries, zero-result queries, and top clicked agents. API key required."""
+    return get_analytics()
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +416,6 @@ async def remove_agent(agent_id: str):
 @app.post("/search", tags=["Search"], response_model=SearchResponse)
 @limiter.limit("30/minute")
 async def search_agents(request: Request, req: SearchRequest):
-    """
-    Semantic search over the agent registry.
-    Returns the top-k most relevant agents for the given task description.
-    """
     vec = embed_text(req.query)
     hits = cosine_search(vec, top_k=req.top_k, tag_filter=req.tags or None)
 
@@ -313,6 +424,11 @@ async def search_agents(request: Request, req: SearchRequest):
         card = get_agent(agent_id)
         if card:
             results.append(AgentResult(id=agent_id, score=score, agent_card=card))
+
+    try:
+        log_search(req.query, len(results), req.tags or [])
+    except Exception as exc:
+        logger.warning("Failed to log search: %s", exc)
 
     return SearchResponse(query=req.query, results=results)
 
@@ -333,5 +449,5 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    reload = os.environ.get("RAILWAY_ENVIRONMENT") is None  # reload only in local dev
+    reload = os.environ.get("RAILWAY_ENVIRONMENT") is None
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload)

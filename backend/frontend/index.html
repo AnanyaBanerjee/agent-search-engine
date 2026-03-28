@@ -91,6 +91,21 @@
       </div>
       <div id="agents-list"><em>Loading…</em></div>
     </section>
+
+    <!-- Analytics -->
+    <section class="analytics-section">
+      <details>
+        <summary>Search Analytics</summary>
+        <div class="analytics-inner">
+          <div class="api-key-row">
+            <label for="analytics-api-key">API Key</label>
+            <input id="analytics-api-key" type="password" placeholder="Required" />
+          </div>
+          <button onclick="loadAnalytics()">Load Analytics</button>
+          <div id="analytics-output"></div>
+        </div>
+      </details>
+    </section>
   </main>
 
   <footer>
