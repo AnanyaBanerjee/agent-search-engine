@@ -20,11 +20,11 @@ The Agent Search Engine is an **A2A-protocol-native registry** — it is itself 
 │  Endpoints                                                            │
 │  ├── GET  /.well-known/agent.json   ← own A2A agent card             │
 │  ├── POST /                         ← A2A JSON-RPC 2.0               │
-│  ├── POST /register                 ← submit an agent card           │
+│  ├── POST /register                 ← submit an agent card [key]     │
 │  ├── POST /search                   ← semantic search (REST)         │
-│  ├── GET  /agents                   ← list all agents                │
+│  ├── GET  /agents                   ← list agents (paginated)        │
 │  ├── GET  /agents/{id}              ← get a single agent card        │
-│  ├── DELETE /agents/{id}            ← remove an agent                │
+│  ├── DELETE /agents/{id}            ← remove an agent [key]          │
 │  ├── GET  /health                   ← health check                   │
 │  └── GET  /ui                       ← web UI (static files)          │
 └──────────────────────────────────────────────────────────────────┘
@@ -108,6 +108,31 @@ Beyond ~50,000 agents, or if you need ANN (approximate nearest neighbour) search
 - **Standardised discovery.** Every agent publishes a `/.well-known/agent.json` card describing its capabilities, endpoint, and auth. This search engine indexes those cards.
 - **Interoperability.** Any A2A-compatible agent (built with LangChain, Google ADK, CrewAI, or a custom stack) can register with and query this engine without bespoke integration work.
 - **The search engine is itself an agent.** It publishes its own agent card and responds to `message/send` — so an orchestrator agent can discover it the same way it discovers any other agent, with no special casing.
+
+---
+
+### Security
+
+**What:** A layered defence-in-depth approach covering authentication, rate limiting, and input validation.
+
+**API key authentication (`REGISTRY_API_KEY` env var)**
+- Write endpoints (`POST /register`, `DELETE /agents/{id}`) require an `X-Api-Key` header matching the env var.
+- Read/search endpoints remain public — discovery is intentionally open.
+- If `REGISTRY_API_KEY` is unset the guard is skipped, keeping local dev frictionless. A warning is logged at startup.
+
+**Rate limiting (slowapi, per IP)**
+- `POST /search` and `POST /` (A2A): 30 req/min
+- `GET /agents`: 20 req/min
+- `GET /agents/{id}`: 60 req/min
+
+**Pagination**
+- `GET /agents` returns at most 100 agents per page (`skip` + `limit` query params). Prevents full-registry enumeration in a single request.
+
+**Input validation**
+- `SearchRequest.query` is capped at 500 characters via Pydantic field constraint. All other models are validated by Pydantic on ingress.
+
+**When to extend:**
+If the registry becomes private (internal tooling, enterprise), replace the single shared API key with per-client keys or OAuth2/JWT as described in the A2A auth spec.
 
 ---
 
@@ -198,5 +223,5 @@ railway.json       Railway deployment config (builder, start command, restart po
 | Storage | SQLite (local) + PostgreSQL (prod) | Multi-region / high write throughput | Managed Postgres with pgvector |
 | Vector search | numpy cosine | >50k agents or <10ms SLA | pgvector or Qdrant |
 | Embeddings | fastembed ONNX (local) | GPU scale / multilingual | Hosted API (Cohere, Voyage) |
-| Auth | None (open registry) | Production / private registry | API keys or OAuth2 per A2A spec |
+| Auth | API key for writes (X-Api-Key), reads open | Per-user auth / private registry | OAuth2 or JWT per A2A spec |
 | Agent card freshness | Manual re-register | Stale cards are a problem | Periodic background re-fetch via card_url |
