@@ -126,7 +126,7 @@ class RegisterRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., description="Natural-language task description")
+    query: str = Field(..., min_length=1, max_length=500, description="Natural-language task description")
     top_k: int = Field(default=5, ge=1, le=20)
     tags: list[str] = []
 
