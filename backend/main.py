@@ -9,7 +9,9 @@ REST endpoints:
   GET  /agents/{id}                   Get a single agent card + health status
   GET  /agents/{id}/history           Agent card version history
   DELETE /agents/{id}                 Remove an agent  [API key required]
-  POST /agents/{id}/click             Log an agent click (analytics)
+  POST /agents/{id}/click             Log an agent click (updates task affinity)
+  POST /agents/{id}/review            Submit a review (score 1-5 + comment)
+  GET  /agents/{id}/reviews           List reviews for an agent
   POST /search                        Semantic search (REST convenience)
   GET  /analytics                     Search & click analytics  [API key required]
   GET  /health                        Health check
@@ -42,18 +44,23 @@ from database import (
     diff_cards,
     get_agent,
     get_agent_raw,
+    get_agent_reviews_list,
     get_agent_versions,
     get_agent_with_health,
     get_all_agent_urls_and_ids,
     get_analytics,
+    get_ranking_signals,
     init_db,
     list_all_agents,
     list_all_agents_with_health,
     log_agent_click,
+    log_impressions,
     log_search,
     make_agent_id,
     save_agent_version,
+    submit_review,
     update_agent_health,
+    update_task_centroid,
     upsert_agent,
 )
 from models import (
@@ -63,10 +70,14 @@ from models import (
     AgentResult,
     AgentSkill,
     AuthScheme,
+    ClickRequest,
     RegisterRequest,
+    ReviewRequest,
+    ReviewResponse,
     SearchRequest,
     SearchResponse,
 )
+from ranking import rerank, RERANK_POOL_MULTIPLIER
 from search import embed_agent_card, embed_text
 
 logging.basicConfig(level=logging.INFO)
@@ -388,14 +399,55 @@ async def remove_agent(agent_id: str):
 
 @app.post("/agents/{agent_id}/click", tags=["Analytics"], summary="Log an agent click")
 @limiter.limit("60/minute")
-async def click_agent(request: Request, agent_id: str):
+async def click_agent(request: Request, agent_id: str, body: ClickRequest = None):
     if get_agent(agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    query_text = body.query if body else None
     try:
-        log_agent_click(agent_id)
+        log_agent_click(agent_id, query_text)
+        if query_text:
+            vec = embed_text(query_text)
+            update_task_centroid(agent_id, vec)
     except Exception as exc:
         logger.warning("Failed to log click for %s: %s", agent_id, exc)
     return {"message": "click recorded"}
+
+
+@app.post(
+    "/agents/{agent_id}/review",
+    tags=["Analytics"],
+    summary="Submit a review for an agent",
+)
+@limiter.limit("10/minute")
+async def review_agent(request: Request, agent_id: str, body: ReviewRequest):
+    if get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    try:
+        meta = submit_review(agent_id, body.reviewer_id, body.score, body.comment)
+    except Exception as exc:
+        logger.error("Failed to save review for %s: %s", agent_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to save review")
+    return ReviewResponse(
+        agent_id=agent_id,
+        reviewer_id=body.reviewer_id,
+        score=body.score,
+        comment=body.comment,
+        created_at=meta["created_at"],
+    )
+
+
+@app.get(
+    "/agents/{agent_id}/reviews",
+    tags=["Analytics"],
+    summary="List reviews for an agent",
+)
+@limiter.limit("30/minute")
+async def list_agent_reviews(request: Request, agent_id: str):
+    if get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    reviews = get_agent_reviews_list(agent_id)
+    avg = round(sum(r["score"] for r in reviews) / len(reviews), 2) if reviews else None
+    return {"agent_id": agent_id, "avg_rating": avg, "reviews": reviews}
 
 
 @app.get(
@@ -417,7 +469,20 @@ async def analytics():
 @limiter.limit("30/minute")
 async def search_agents(request: Request, req: SearchRequest):
     vec = embed_text(req.query)
-    hits = cosine_search(vec, top_k=req.top_k, tag_filter=req.tags or None)
+
+    # Fetch an enlarged candidate pool for reranking
+    pool_size = req.top_k * RERANK_POOL_MULTIPLIER
+    hits = cosine_search(vec, top_k=pool_size, tag_filter=req.tags or None)
+
+    if hits:
+        try:
+            signals = get_ranking_signals([aid for aid, _ in hits])
+            hits = rerank(hits, vec, signals)
+        except Exception as exc:
+            logger.warning("Reranking failed, falling back to semantic order: %s", exc)
+
+    # Trim to requested top_k after reranking
+    hits = hits[: req.top_k]
 
     results: list[AgentResult] = []
     for agent_id, score in hits:
@@ -427,8 +492,10 @@ async def search_agents(request: Request, req: SearchRequest):
 
     try:
         log_search(req.query, len(results), req.tags or [])
+        if results:
+            log_impressions([r.id for r in results], req.query)
     except Exception as exc:
-        logger.warning("Failed to log search: %s", exc)
+        logger.warning("Failed to log search/impressions: %s", exc)
 
     return SearchResponse(query=req.query, results=results)
 

@@ -259,6 +259,23 @@ textarea { resize: vertical; font-family: monospace; font-size: 13px; }
 .analytics-grid code { color: var(--text); word-break: break-all; }
 .analytic-count { color: var(--accent); white-space: nowrap; flex-shrink: 0; }
 
+/* ---- Star ratings ---- */
+.star-rating { color: #f5a623; letter-spacing: 1px; font-size: 13px; }
+.star-count   { color: var(--muted); font-size: 12px; }
+
+/* ---- Review panel ---- */
+.review-avg { margin-bottom: .6rem; font-size: 13px; }
+.review-form { margin-top: .8rem; border-top: 1px solid var(--border); padding-top: .8rem; }
+.review-form strong { font-size: 13px; display: block; margin-bottom: .5rem; color: var(--muted); }
+.review-form-row { display: flex; gap: .5rem; margin-bottom: .4rem; }
+.review-form input, .review-form select { margin-bottom: .4rem; }
+.review-score-select {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); padding: .5rem .6rem;
+  font-size: 14px; cursor: pointer;
+}
+.review-score-select:focus { border-color: var(--accent); outline: none; }
+
 /* ---- Footer ---- */
 footer {
   border-top: 1px solid var(--border);

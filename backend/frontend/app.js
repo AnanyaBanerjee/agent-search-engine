@@ -4,6 +4,8 @@
 
 const API = '';   // same-origin; change to 'http://localhost:8000' for local dev
 
+let _lastQuery = '';  // tracks the most recent search query for click attribution
+
 
 /* ---- Utilities ---- */
 function $(id) { return document.getElementById(id); }
@@ -14,6 +16,12 @@ const STATUS_COLORS = {
   stale:   { bg: 'rgba(255,204,0,.15)',   fg: '#ffcc00', border: 'rgba(255,204,0,.4)'   },
   unknown: { bg: 'rgba(136,146,164,.15)', fg: '#8892a4', border: 'rgba(136,146,164,.4)' },
 };
+
+function starsHtml(rating) {
+  if (rating == null) return '';
+  const full = Math.round(rating);
+  return `<span class="star-rating" title="${rating.toFixed(1)}/5">${'★'.repeat(full)}${'☆'.repeat(5 - full)}</span> <span class="star-count">${rating.toFixed(1)}</span>`;
+}
 
 function buildAgentCard(r, showScore = true) {
   const c = r.agent_card;
@@ -48,6 +56,9 @@ function buildAgentCard(r, showScore = true) {
 
   const agentIdSafe = (r.id || '').replace(/'/g, "\\'");
   const historyId = `history-${(r.id || '').replace(/[^a-z0-9]/gi, '_')}`;
+  const reviewId  = `reviews-${(r.id || '').replace(/[^a-z0-9]/gi, '_')}`;
+
+  const ratingHtml = r.avg_rating != null ? starsHtml(r.avg_rating) : '';
 
   return `
     <div class="agent-card" onclick="trackClick('${agentIdSafe}')">
@@ -58,6 +69,7 @@ function buildAgentCard(r, showScore = true) {
           <div class="card-id">${c.humanReadableId || r.id || ''}</div>
         </div>
         <div class="card-header-right">
+          ${ratingHtml}
           ${scoreHtml}
           ${statusBadge}
         </div>
@@ -72,8 +84,10 @@ function buildAgentCard(r, showScore = true) {
       ${skillsHtml}
       <div class="card-actions">
         <button class="btn-history" onclick="event.stopPropagation();toggleHistory('${agentIdSafe}', '${historyId}')">History</button>
+        <button class="btn-history" onclick="event.stopPropagation();toggleReviews('${agentIdSafe}', '${reviewId}')">Reviews</button>
       </div>
       <div id="${historyId}" class="agent-history hidden"></div>
+      <div id="${reviewId}"  class="agent-history hidden"></div>
     </div>
   `;
 }
@@ -83,6 +97,8 @@ function buildAgentCard(r, showScore = true) {
 async function doSearch() {
   const query = $('query').value.trim();
   if (!query) return;
+
+  _lastQuery = query;
 
   const tagRaw = $('tag-input').value.trim();
   const tags = tagRaw ? tagRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
@@ -128,7 +144,11 @@ $('query').addEventListener('keydown', e => {
 async function trackClick(agentId) {
   if (!agentId) return;
   try {
-    await fetch(`${API}/agents/${encodeURIComponent(agentId)}/click`, { method: 'POST' });
+    await fetch(`${API}/agents/${encodeURIComponent(agentId)}/click`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: _lastQuery || null }),
+    });
   } catch (_) { /* best-effort */ }
 }
 
@@ -177,6 +197,86 @@ async function toggleHistory(agentId, containerId) {
     }).join('');
   } catch (e) {
     el.innerHTML = `<em style="color:#ff8080">Failed to load history: ${e.message}</em>`;
+  }
+}
+
+
+/* ---- Reviews ---- */
+async function toggleReviews(agentId, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+
+  if (!el.classList.contains('hidden')) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+
+  el.innerHTML = '<em style="color:var(--muted)">Loading reviews…</em>';
+  el.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`${API}/agents/${encodeURIComponent(agentId)}/reviews`);
+    const data = await res.json();
+    const reviews = data.reviews || [];
+    const avgHtml = data.avg_rating != null
+      ? `<div class="review-avg">${starsHtml(data.avg_rating)} &nbsp;avg from ${reviews.length} review${reviews.length !== 1 ? 's' : ''}</div>`
+      : '';
+
+    const formHtml = `
+      <div class="review-form">
+        <strong>Leave a review</strong>
+        <div class="review-form-row">
+          <input id="review-reviewer-${containerId}" type="text" placeholder="Your ID / name" style="max-width:180px" />
+          <select id="review-score-${containerId}" class="review-score-select">
+            <option value="">Score</option>
+            ${[5,4,3,2,1].map(n => `<option value="${n}">${'★'.repeat(n)} ${n}</option>`).join('')}
+          </select>
+        </div>
+        <input id="review-comment-${containerId}" type="text" placeholder="Optional comment" />
+        <button class="btn-history" onclick="submitReview('${agentId.replace(/'/g,"\\'")}', '${containerId}')">Submit</button>
+        <span id="review-msg-${containerId}" style="font-size:12px;margin-left:.5rem"></span>
+      </div>`;
+
+    if (!reviews.length) {
+      el.innerHTML = avgHtml + '<em style="color:var(--muted)">No reviews yet.</em>' + formHtml;
+      return;
+    }
+
+    el.innerHTML = avgHtml + reviews.map(v => `
+      <div class="version-entry">
+        <div class="version-meta">${starsHtml(v.score)} · ${v.reviewer_id} · ${v.created_at}</div>
+        ${v.comment ? `<div style="font-size:13px;margin-top:.3rem">${v.comment}</div>` : ''}
+      </div>`).join('') + formHtml;
+  } catch (e) {
+    el.innerHTML = `<em style="color:#ff8080">Failed to load reviews: ${e.message}</em>`;
+  }
+}
+
+async function submitReview(agentId, containerId) {
+  const reviewer = document.getElementById(`review-reviewer-${containerId}`).value.trim();
+  const score    = parseInt(document.getElementById(`review-score-${containerId}`).value, 10);
+  const comment  = document.getElementById(`review-comment-${containerId}`).value.trim();
+  const msgEl    = document.getElementById(`review-msg-${containerId}`);
+
+  if (!reviewer) { msgEl.style.color = '#ff8080'; msgEl.textContent = 'Enter your ID.'; return; }
+  if (!score)    { msgEl.style.color = '#ff8080'; msgEl.textContent = 'Choose a score.'; return; }
+
+  try {
+    const res = await fetch(`${API}/agents/${encodeURIComponent(agentId)}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewer_id: reviewer, score, comment }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || 'Error');
+    msgEl.style.color = '#4ecdc4';
+    msgEl.textContent = '✓ Saved';
+    // Reload reviews panel
+    setTimeout(() => toggleReviews(agentId, containerId), 400);
+    setTimeout(() => toggleReviews(agentId, containerId), 500);
+  } catch (e) {
+    msgEl.style.color = '#ff8080';
+    msgEl.textContent = e.message;
   }
 }
 
