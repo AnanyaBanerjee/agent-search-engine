@@ -140,3 +140,24 @@ class AgentResult(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     results: list[AgentResult]
+
+
+class ClickRequest(BaseModel):
+    query: Optional[str] = Field(
+        default=None,
+        description="The search query that surfaced this agent (used to update task affinity)."
+    )
+
+
+class ReviewRequest(BaseModel):
+    reviewer_id: str = Field(..., min_length=1, max_length=200, description="Unique identifier for the reviewer")
+    score: int = Field(..., ge=1, le=5, description="Rating from 1 (worst) to 5 (best)")
+    comment: str = Field(default="", max_length=2000)
+
+
+class ReviewResponse(BaseModel):
+    agent_id: str
+    reviewer_id: str
+    score: int
+    comment: str
+    created_at: str

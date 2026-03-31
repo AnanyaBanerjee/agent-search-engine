@@ -99,9 +99,32 @@ CREATE TABLE IF NOT EXISTS search_logs (
 CREATE TABLE IF NOT EXISTS agent_clicks (
     id         SERIAL PRIMARY KEY,
     agent_id   TEXT        NOT NULL,
+    query_text TEXT,
     clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_agent_clicks_agent_id ON agent_clicks (agent_id);
+CREATE TABLE IF NOT EXISTS agent_impressions (
+    id        SERIAL PRIMARY KEY,
+    agent_id  TEXT        NOT NULL,
+    query     TEXT        NOT NULL DEFAULT '',
+    shown_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_impressions_agent_id ON agent_impressions (agent_id);
+CREATE TABLE IF NOT EXISTS agent_task_centroids (
+    agent_id    TEXT    PRIMARY KEY,
+    centroid    BYTEA   NOT NULL,
+    click_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS agent_reviews (
+    id          SERIAL PRIMARY KEY,
+    agent_id    TEXT        NOT NULL,
+    reviewer_id TEXT        NOT NULL,
+    score       INTEGER     NOT NULL CHECK (score BETWEEN 1 AND 5),
+    comment     TEXT        NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (agent_id, reviewer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reviews_agent_id ON agent_reviews (agent_id);
 """
 
 _SCHEMA_SQLITE = """
@@ -133,28 +156,63 @@ CREATE TABLE IF NOT EXISTS search_logs (
 CREATE TABLE IF NOT EXISTS agent_clicks (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id   TEXT    NOT NULL,
+    query_text TEXT,
     clicked_at TEXT    DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_clicks_agent_id ON agent_clicks (agent_id);
+CREATE TABLE IF NOT EXISTS agent_impressions (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT    NOT NULL,
+    query    TEXT    NOT NULL DEFAULT '',
+    shown_at TEXT    DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_impressions_agent_id ON agent_impressions (agent_id);
+CREATE TABLE IF NOT EXISTS agent_task_centroids (
+    agent_id    TEXT    PRIMARY KEY,
+    centroid    BLOB    NOT NULL,
+    click_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS agent_reviews (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id    TEXT    NOT NULL,
+    reviewer_id TEXT    NOT NULL,
+    score       INTEGER NOT NULL CHECK (score BETWEEN 1 AND 5),
+    comment     TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    DEFAULT (datetime('now')),
+    UNIQUE (agent_id, reviewer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reviews_agent_id ON agent_reviews (agent_id);
 """
 
 
 def _migrate_agents_columns(conn, use_postgres: bool) -> None:
-    """Add health columns to agents tables that predate this schema version."""
-    new_cols = [
+    """Add new columns to existing tables for schema upgrades."""
+    agents_cols = [
         ("status",           "TEXT NOT NULL DEFAULT 'unknown'"),
         ("last_checked",     "TIMESTAMPTZ" if use_postgres else "TEXT"),
         ("last_seen_online", "TIMESTAMPTZ" if use_postgres else "TEXT"),
     ]
+    clicks_cols = [
+        ("query_text", "TEXT"),
+    ]
     if use_postgres:
         cur = conn.cursor()
-        for col, typedef in new_cols:
+        for col, typedef in agents_cols:
             cur.execute(f"ALTER TABLE agents ADD COLUMN IF NOT EXISTS {col} {typedef}")
+        for col, typedef in clicks_cols:
+            cur.execute(f"ALTER TABLE agent_clicks ADD COLUMN IF NOT EXISTS {col} {typedef}")
     else:
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
-        for col, typedef in new_cols:
-            if col not in existing:
+        existing_agents = {row["name"] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+        for col, typedef in agents_cols:
+            if col not in existing_agents:
                 conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {typedef}")
+        try:
+            existing_clicks = {row["name"] for row in conn.execute("PRAGMA table_info(agent_clicks)").fetchall()}
+            for col, typedef in clicks_cols:
+                if col not in existing_clicks:
+                    conn.execute(f"ALTER TABLE agent_clicks ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
 
 
 def init_db() -> None:
@@ -560,14 +618,20 @@ def log_search(query: str, results_count: int, tags: list[str]) -> None:
             )
 
 
-def log_agent_click(agent_id: str) -> None:
+def log_agent_click(agent_id: str, query_text: str | None = None) -> None:
     if _USE_POSTGRES:
         with _pg_conn() as conn:
             cur = conn.cursor()
-            cur.execute("INSERT INTO agent_clicks (agent_id) VALUES (%s)", (agent_id,))
+            cur.execute(
+                "INSERT INTO agent_clicks (agent_id, query_text) VALUES (%s, %s)",
+                (agent_id, query_text),
+            )
     else:
         with _sqlite_conn() as conn:
-            conn.execute("INSERT INTO agent_clicks (agent_id) VALUES (?)", (agent_id,))
+            conn.execute(
+                "INSERT INTO agent_clicks (agent_id, query_text) VALUES (?, ?)",
+                (agent_id, query_text),
+            )
 
 
 def get_analytics() -> dict:
@@ -618,6 +682,278 @@ def get_analytics() -> dict:
         "zero_result_queries": zero_result,
         "top_clicked_agents": top_clicked,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ranking signals (for multi-signal reranking)
+# ---------------------------------------------------------------------------
+
+def log_impressions(agent_ids: list[str], query: str) -> None:
+    """Record that each agent_id was shown as a search result for this query."""
+    if not agent_ids:
+        return
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.executemany(
+                "INSERT INTO agent_impressions (agent_id, query) VALUES (%s, %s)",
+                [(aid, query) for aid in agent_ids],
+            )
+    else:
+        with _sqlite_conn() as conn:
+            conn.executemany(
+                "INSERT INTO agent_impressions (agent_id, query) VALUES (?, ?)",
+                [(aid, query) for aid in agent_ids],
+            )
+
+
+def update_task_centroid(agent_id: str, query_embedding: np.ndarray) -> None:
+    """
+    Online running-average update of the per-agent task centroid.
+    new_centroid = (old_centroid * n + query_embedding) / (n + 1)
+    """
+    q = query_embedding.astype(np.float32)
+    if _USE_POSTGRES:
+        import psycopg2
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT centroid, click_count FROM agent_task_centroids WHERE agent_id = %s",
+                (agent_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                new_centroid = q
+                new_count = 1
+            else:
+                old = np.frombuffer(bytes(row[0]), dtype=np.float32)
+                n = row[1]
+                new_centroid = (old * n + q) / (n + 1)
+                new_count = n + 1
+            blob = new_centroid.tobytes()
+            cur.execute(
+                """
+                INSERT INTO agent_task_centroids (agent_id, centroid, click_count)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (agent_id) DO UPDATE SET
+                    centroid    = EXCLUDED.centroid,
+                    click_count = EXCLUDED.click_count
+                """,
+                (agent_id, psycopg2.Binary(blob), new_count),
+            )
+    else:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                "SELECT centroid, click_count FROM agent_task_centroids WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+            if row is None:
+                new_centroid = q
+                new_count = 1
+            else:
+                old = np.frombuffer(row["centroid"], dtype=np.float32)
+                n = row["click_count"]
+                new_centroid = (old * n + q) / (n + 1)
+                new_count = n + 1
+            blob = new_centroid.tobytes()
+            conn.execute(
+                """
+                INSERT INTO agent_task_centroids (agent_id, centroid, click_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    centroid    = excluded.centroid,
+                    click_count = excluded.click_count
+                """,
+                (agent_id, blob, new_count),
+            )
+
+
+def get_ranking_signals(agent_ids: list[str]) -> dict:
+    """
+    Bulk-fetch all ranking signals for the given agent_ids.
+
+    Returns {agent_id: {ctr, recency_raw, task_centroid, avg_rating, registered_at, click_count}}
+    where:
+      - ctr           = clicks / max(impressions, 1)  [0, 1]
+      - recency_raw   = raw decayed click sum (un-normalised)
+      - task_centroid = np.ndarray | None
+      - avg_rating    = float | None  (1–5)
+      - registered_at = ISO string | None
+      - click_count   = int
+    """
+    from ranking import compute_recency_raw
+
+    if not agent_ids:
+        return {}
+
+    result: dict = {aid: {
+        "ctr": 0.0, "recency_raw": 0.0, "task_centroid": None,
+        "avg_rating": None, "registered_at": None, "click_count": 0,
+    } for aid in agent_ids}
+
+    if _USE_POSTGRES:
+        ph = ",".join(["%s"] * len(agent_ids))
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+
+            # click timestamps per agent
+            cur.execute(
+                f"SELECT agent_id, clicked_at FROM agent_clicks WHERE agent_id IN ({ph})",
+                agent_ids,
+            )
+            clicks_map: dict[str, list[str]] = {}
+            for aid, ts in cur.fetchall():
+                clicks_map.setdefault(aid, []).append(str(ts))
+
+            # impression counts per agent
+            cur.execute(
+                f"SELECT agent_id, COUNT(*) FROM agent_impressions WHERE agent_id IN ({ph}) GROUP BY agent_id",
+                agent_ids,
+            )
+            impressions_map = {r[0]: r[1] for r in cur.fetchall()}
+
+            # task centroids
+            cur.execute(
+                f"SELECT agent_id, centroid FROM agent_task_centroids WHERE agent_id IN ({ph})",
+                agent_ids,
+            )
+            centroids_map = {r[0]: np.frombuffer(bytes(r[1]), dtype=np.float32) for r in cur.fetchall()}
+
+            # avg ratings
+            cur.execute(
+                f"SELECT agent_id, AVG(score) FROM agent_reviews WHERE agent_id IN ({ph}) GROUP BY agent_id",
+                agent_ids,
+            )
+            ratings_map = {r[0]: float(r[1]) for r in cur.fetchall()}
+
+            # registered_at
+            cur.execute(
+                f"SELECT id, registered FROM agents WHERE id IN ({ph})",
+                agent_ids,
+            )
+            registered_map = {r[0]: str(r[1]) for r in cur.fetchall()}
+
+    else:
+        ph = ",".join(["?"] * len(agent_ids))
+        with _sqlite_conn() as conn:
+            clicks_map = {}
+            for row in conn.execute(
+                f"SELECT agent_id, clicked_at FROM agent_clicks WHERE agent_id IN ({ph})",
+                agent_ids,
+            ).fetchall():
+                clicks_map.setdefault(row["agent_id"], []).append(row["clicked_at"])
+
+            impressions_map = {
+                r["agent_id"]: r["cnt"]
+                for r in conn.execute(
+                    f"SELECT agent_id, COUNT(*) AS cnt FROM agent_impressions WHERE agent_id IN ({ph}) GROUP BY agent_id",
+                    agent_ids,
+                ).fetchall()
+            }
+            centroids_map = {
+                r["agent_id"]: np.frombuffer(r["centroid"], dtype=np.float32)
+                for r in conn.execute(
+                    f"SELECT agent_id, centroid FROM agent_task_centroids WHERE agent_id IN ({ph})",
+                    agent_ids,
+                ).fetchall()
+            }
+            ratings_map = {
+                r["agent_id"]: float(r["avg_score"])
+                for r in conn.execute(
+                    f"SELECT agent_id, AVG(score) AS avg_score FROM agent_reviews WHERE agent_id IN ({ph}) GROUP BY agent_id",
+                    agent_ids,
+                ).fetchall()
+            }
+            registered_map = {
+                r["id"]: r["registered"]
+                for r in conn.execute(
+                    f"SELECT id, registered FROM agents WHERE id IN ({ph})",
+                    agent_ids,
+                ).fetchall()
+            }
+
+    for aid in agent_ids:
+        timestamps = clicks_map.get(aid, [])
+        click_count = len(timestamps)
+        impressions = impressions_map.get(aid, 0)
+        result[aid] = {
+            "ctr": click_count / max(impressions, 1),
+            "recency_raw": compute_recency_raw(timestamps),
+            "task_centroid": centroids_map.get(aid),
+            "avg_rating": ratings_map.get(aid),
+            "registered_at": registered_map.get(aid),
+            "click_count": click_count,
+        }
+
+    return result
+
+
+def submit_review(agent_id: str, reviewer_id: str, score: int, comment: str) -> dict:
+    """Upsert a review (one review per reviewer per agent)."""
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO agent_reviews (agent_id, reviewer_id, score, comment)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (agent_id, reviewer_id) DO UPDATE SET
+                    score   = EXCLUDED.score,
+                    comment = EXCLUDED.comment,
+                    created_at = NOW()
+                RETURNING id, created_at
+                """,
+                (agent_id, reviewer_id, score, comment),
+            )
+            row = cur.fetchone()
+            return {"id": row[0], "created_at": str(row[1])}
+    else:
+        with _sqlite_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_reviews (agent_id, reviewer_id, score, comment)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(agent_id, reviewer_id) DO UPDATE SET
+                    score      = excluded.score,
+                    comment    = excluded.comment,
+                    created_at = datetime('now')
+                """,
+                (agent_id, reviewer_id, score, comment),
+            )
+            row = conn.execute(
+                "SELECT id, created_at FROM agent_reviews WHERE agent_id=? AND reviewer_id=?",
+                (agent_id, reviewer_id),
+            ).fetchone()
+            return {"id": row["id"], "created_at": row["created_at"]}
+
+
+def get_agent_reviews_list(agent_id: str) -> list[dict]:
+    """Return all reviews for an agent, newest first."""
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT reviewer_id, score, comment, created_at "
+                "FROM agent_reviews WHERE agent_id = %s ORDER BY created_at DESC",
+                (agent_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"reviewer_id": r[0], "score": r[1], "comment": r[2], "created_at": str(r[3])}
+            for r in rows
+        ]
+    else:
+        with _sqlite_conn() as conn:
+            rows = conn.execute(
+                "SELECT reviewer_id, score, comment, created_at "
+                "FROM agent_reviews WHERE agent_id = ? ORDER BY created_at DESC",
+                (agent_id,),
+            ).fetchall()
+        return [
+            {"reviewer_id": r["reviewer_id"], "score": r["score"],
+             "comment": r["comment"], "created_at": r["created_at"]}
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
