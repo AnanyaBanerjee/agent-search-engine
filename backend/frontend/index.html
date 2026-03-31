@@ -4,20 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agent Search Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
     <div class="header-inner">
-      <h1>Agent Search Engine</h1>
-      <p class="subtitle">A2A-compatible registry &amp; semantic search for AI agents</p>
+      <div class="hero-badge">⚡ A2A-compatible agent registry</div>
+      <h1>Find the right AI agent<br>for <span class="highlight">any task.</span></h1>
+      <p class="subtitle">Semantic search across registered A2A agents — ranked by relevance, popularity, and reputation.</p>
     </div>
   </header>
 
   <main>
     <!-- Search bar -->
     <section class="search-section">
-      <div class="search-box">
+      <div class="search-pill">
+        <span class="search-icon">&#128269;</span>
         <input
           id="query"
           type="text"
@@ -28,7 +33,7 @@
       </div>
       <div class="tag-filter">
         <label>Filter by tag:</label>
-        <input id="tag-input" type="text" placeholder="e.g. nlp, vision, code" />
+        <input id="tag-input" type="text" placeholder="nlp, vision, code…" />
       </div>
     </section>
 
