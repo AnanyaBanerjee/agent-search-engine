@@ -228,26 +228,38 @@ curl -X POST https://agent-search-engine-production.up.railway.app/ \
   }'
 ```
 
-The response is a standard A2A task result with a `data` artifact containing matching agents and their full cards:
+The response contains two parts: a human-readable text summary and a structured `data` artifact with full agent cards.
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": "req-001",
   "result": {
-    "id": "task-...",
-    "status": { "state": "completed" },
+    "taskId": "a855748e-...",
+    "status": "completed",
     "artifacts": [
       {
+        "name": "search_results",
         "parts": [
+          {
+            "kind": "text",
+            "text": "Found 5 agent(s) for: \"Find me an agent...\"\n\n1. [Data Hub] (score: 0.664)\n   ..."
+          },
           {
             "kind": "data",
             "data": {
+              "query": "Find me an agent that can extract data",
               "results": [
                 {
-                  "id": "myorg__pdf-summariser",
-                  "score": 0.847,
-                  "agent_card": { ... }
+                  "id": "data-hub",
+                  "score": 0.664,
+                  "agent_card": {
+                    "name": "Data Hub",
+                    "description": "Extract quotes and authors from images...",
+                    "url": "https://datahub-production-370a.up.railway.app/a2a",
+                    "skills": [...],
+                    "tags": [...]
+                  }
                 }
               ]
             }
