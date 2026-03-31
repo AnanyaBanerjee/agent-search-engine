@@ -262,12 +262,48 @@ if FRONTEND_DIR.exists():
 # A2A discovery + JSON-RPC
 # ---------------------------------------------------------------------------
 
-@app.get("/.well-known/agent.json", tags=["A2A"])
+@app.get(
+    "/.well-known/agent.json",
+    tags=["A2A"],
+    summary="This engine's own A2A agent card",
+    response_model=AgentCard,
+    responses={200: {"description": "The Agent Search Engine's A2A agent card"}},
+)
 async def agent_card():
     return OWN_CARD.model_dump()
 
 
-@app.post("/", tags=["A2A"])
+@app.post(
+    "/",
+    tags=["A2A"],
+    summary="A2A JSON-RPC 2.0 endpoint",
+    response_description="JSON-RPC 2.0 response with search results as artifacts",
+    responses={
+        200: {
+            "description": "JSON-RPC 2.0 response",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "jsonrpc": "2.0",
+                        "id": "req-001",
+                        "result": {
+                            "taskId": "abc123",
+                            "status": "completed",
+                            "artifacts": [{
+                                "name": "search_results",
+                                "parts": [
+                                    {"kind": "text", "text": "Found 3 agent(s) for: \"...\"\n\n1. [My Agent] (score: 0.85)\n   ..."},
+                                    {"kind": "data", "data": {"query": "...", "results": [{"id": "myorg__my-agent", "score": 0.85, "agent_card": {"name": "My Agent", "url": "https://..."}}]}}
+                                ]
+                            }]
+                        },
+                        "error": None
+                    }
+                }
+            }
+        }
+    },
+)
 @limiter.limit("30/minute")
 async def a2a_jsonrpc(request: Request):
     try:
@@ -301,12 +337,19 @@ async def a2a_jsonrpc(request: Request):
     tags=["Registry"],
     summary="Register an agent card",
     dependencies=[Depends(require_api_key)],
+    responses={
+        200: {"description": "Agent registered successfully", "content": {"application/json": {"example": {"id": "myorg__my-agent", "message": "Agent 'My Agent' registered successfully."}}}},
+        400: {"description": "Invalid card or failed to fetch from URL"},
+        401: {"description": "Missing or invalid API key"},
+    },
 )
 async def register_agent(req: RegisterRequest):
     """
-    Submit an A2A agent card to be indexed.
-    Diffs against the existing card and saves a version snapshot if anything changed.
-    Requires X-Api-Key header when REGISTRY_API_KEY is configured.
+    Submit an A2A agent card to be indexed. Pass either a full `agent_card` JSON or set `card_url`
+    to have the engine fetch `/.well-known/agent.json` from that URL automatically.
+
+    On re-registration the card is diffed field-by-field against the stored version; changed fields
+    are saved as a version snapshot. Requires `X-Api-Key` header when `REGISTRY_API_KEY` is set.
     """
     card = req.agent_card
 
@@ -347,7 +390,13 @@ async def register_agent(req: RegisterRequest):
     return {"id": agent_id, "message": f"Agent '{card.name}' registered successfully."}
 
 
-@app.get("/agents", tags=["Registry"], summary="List all registered agents")
+@app.get(
+    "/agents",
+    tags=["Registry"],
+    summary="List all registered agents",
+    response_description="Paginated list of agents with health status",
+    responses={200: {"description": "Paginated agent list", "content": {"application/json": {"example": {"total": 42, "skip": 0, "limit": 20, "agents": [{"id": "myorg__my-agent", "registered": "2026-01-01T00:00:00Z", "agent_card": {"name": "My Agent"}, "health": {"status": "online", "last_checked": "2026-01-02T00:00:00Z", "last_seen_online": "2026-01-02T00:00:00Z"}}]}}}}},
+)
 @limiter.limit("20/minute")
 async def list_agents(
     request: Request,
@@ -363,7 +412,15 @@ async def list_agents(
     }
 
 
-@app.get("/agents/{agent_id}/history", tags=["Registry"], summary="Agent card version history")
+@app.get(
+    "/agents/{agent_id}/history",
+    tags=["Registry"],
+    summary="Agent card version history",
+    responses={
+        200: {"description": "List of card versions with field-level diffs", "content": {"application/json": {"example": {"id": "myorg__my-agent", "versions": [{"version_num": 1, "card": {}, "diff": {"description": {"old": "old text", "new": "new text"}}, "created_at": "2026-01-01T00:00:00Z"}]}}}},
+        404: {"description": "Agent not found"},
+    },
+)
 @limiter.limit("30/minute")
 async def agent_history(request: Request, agent_id: str):
     if get_agent(agent_id) is None:
@@ -372,7 +429,15 @@ async def agent_history(request: Request, agent_id: str):
     return {"id": agent_id, "versions": versions}
 
 
-@app.get("/agents/{agent_id}", tags=["Registry"], summary="Get a single agent card")
+@app.get(
+    "/agents/{agent_id}",
+    tags=["Registry"],
+    summary="Get a single agent card",
+    responses={
+        200: {"description": "Agent card with health status"},
+        404: {"description": "Agent not found"},
+    },
+)
 @limiter.limit("60/minute")
 async def get_agent_endpoint(request: Request, agent_id: str):
     result = get_agent_with_health(agent_id)
@@ -397,9 +462,22 @@ async def remove_agent(agent_id: str):
 # Analytics
 # ---------------------------------------------------------------------------
 
-@app.post("/agents/{agent_id}/click", tags=["Analytics"], summary="Log an agent click")
+@app.post(
+    "/agents/{agent_id}/click",
+    tags=["Analytics"],
+    summary="Log an agent click",
+    responses={
+        200: {"description": "Click recorded", "content": {"application/json": {"example": {"message": "click recorded"}}}},
+        404: {"description": "Agent not found"},
+    },
+)
 @limiter.limit("60/minute")
 async def click_agent(request: Request, agent_id: str, body: ClickRequest = None):
+    """
+    Record that a user or agent clicked on this agent after a search.
+    Include `query` in the request body to update the agent's task-affinity ranking signal
+    (the engine learns which tasks this agent is chosen for).
+    """
     if get_agent(agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     query_text = body.query if body else None
@@ -417,9 +495,19 @@ async def click_agent(request: Request, agent_id: str, body: ClickRequest = None
     "/agents/{agent_id}/review",
     tags=["Analytics"],
     summary="Submit a review for an agent",
+    response_model=ReviewResponse,
+    responses={
+        200: {"description": "Review saved (one review per reviewer_id per agent — re-submitting updates it)"},
+        404: {"description": "Agent not found"},
+    },
 )
 @limiter.limit("10/minute")
 async def review_agent(request: Request, agent_id: str, body: ReviewRequest):
+    """
+    Submit a star rating (1–5) and optional comment for an agent. One review per `reviewer_id`
+    per agent — re-submitting with the same `reviewer_id` overwrites the previous review.
+    Average rating feeds into the multi-signal ranking score.
+    """
     if get_agent(agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     try:
@@ -440,6 +528,10 @@ async def review_agent(request: Request, agent_id: str, body: ReviewRequest):
     "/agents/{agent_id}/reviews",
     tags=["Analytics"],
     summary="List reviews for an agent",
+    responses={
+        200: {"description": "Reviews and average rating", "content": {"application/json": {"example": {"agent_id": "myorg__my-agent", "avg_rating": 4.5, "reviews": [{"reviewer_id": "agent-xyz", "score": 5, "comment": "Excellent", "created_at": "2026-01-01T00:00:00Z"}]}}}},
+        404: {"description": "Agent not found"},
+    },
 )
 @limiter.limit("30/minute")
 async def list_agent_reviews(request: Request, agent_id: str):
@@ -455,9 +547,18 @@ async def list_agent_reviews(request: Request, agent_id: str):
     tags=["Analytics"],
     summary="Search and click analytics",
     dependencies=[Depends(require_api_key)],
+    responses={
+        200: {"description": "Aggregated analytics", "content": {"application/json": {"example": {"top_queries": [{"query": "summarise PDF", "count": 42}], "zero_result_queries": [{"query": "unknown task", "count": 3}], "top_clicked_agents": [{"agent_id": "myorg__my-agent", "clicks": 17}]}}}},
+        401: {"description": "Missing or invalid API key"},
+    },
 )
 async def analytics():
-    """Top queries, zero-result queries, and top clicked agents. API key required."""
+    """
+    Returns three aggregated tables (API key required):
+    - **top_queries** — 10 most searched terms
+    - **zero_result_queries** — 10 most searched terms that returned no agents (reveals gaps)
+    - **top_clicked_agents** — 10 agents clicked most often
+    """
     return get_analytics()
 
 
@@ -465,9 +566,24 @@ async def analytics():
 # Search REST API
 # ---------------------------------------------------------------------------
 
-@app.post("/search", tags=["Search"], response_model=SearchResponse)
+@app.post(
+    "/search",
+    tags=["Search"],
+    summary="Semantic search with multi-signal reranking",
+    response_model=SearchResponse,
+    responses={
+        200: {"description": "Ranked list of matching agents"},
+        429: {"description": "Rate limit exceeded (30 req/min per IP)"},
+    },
+)
 @limiter.limit("30/minute")
 async def search_agents(request: Request, req: SearchRequest):
+    """
+    Embed the query and return the top matching agents, reranked by a composite score:
+    semantic similarity (50%) + CTR (20%) + recency (15%) + task affinity (10%) + reputation (5%) + cold-start bonus.
+
+    Use `tags` to hard-filter results to agents that carry at least one matching tag.
+    """
     vec = embed_text(req.query)
 
     # Fetch an enlarged candidate pool for reranking
