@@ -66,16 +66,27 @@ from database import (
 from models import (
     AgentCapabilities,
     AgentCard,
+    AgentClickCount,
+    AgentHistoryResponse,
+    AgentListResponse,
     AgentProvider,
     AgentResult,
+    AgentReviewsResponse,
     AgentSkill,
+    AgentWithHealth,
+    AnalyticsResponse,
     AuthScheme,
     ClickRequest,
+    HealthResponse,
+    MessageResponse,
     RegisterRequest,
+    RegisterResponse,
+    ReviewEntry,
     ReviewRequest,
     ReviewResponse,
     SearchRequest,
     SearchResponse,
+    VersionEntry,
 )
 from ranking import rerank, RERANK_POOL_MULTIPLIER
 from search import embed_agent_card, embed_text
@@ -336,9 +347,9 @@ async def a2a_jsonrpc(request: Request):
     "/register",
     tags=["Registry"],
     summary="Register an agent card",
+    response_model=RegisterResponse,
     dependencies=[Depends(require_api_key)],
     responses={
-        200: {"description": "Agent registered successfully", "content": {"application/json": {"example": {"id": "myorg__my-agent", "message": "Agent 'My Agent' registered successfully."}}}},
         400: {"description": "Invalid card or failed to fetch from URL"},
         401: {"description": "Missing or invalid API key"},
     },
@@ -394,8 +405,7 @@ async def register_agent(req: RegisterRequest):
     "/agents",
     tags=["Registry"],
     summary="List all registered agents",
-    response_description="Paginated list of agents with health status",
-    responses={200: {"description": "Paginated agent list", "content": {"application/json": {"example": {"total": 42, "skip": 0, "limit": 20, "agents": [{"id": "myorg__my-agent", "registered": "2026-01-01T00:00:00Z", "agent_card": {"name": "My Agent"}, "health": {"status": "online", "last_checked": "2026-01-02T00:00:00Z", "last_seen_online": "2026-01-02T00:00:00Z"}}]}}}}},
+    response_model=AgentListResponse,
 )
 @limiter.limit("20/minute")
 async def list_agents(
@@ -416,10 +426,8 @@ async def list_agents(
     "/agents/{agent_id}/history",
     tags=["Registry"],
     summary="Agent card version history",
-    responses={
-        200: {"description": "List of card versions with field-level diffs", "content": {"application/json": {"example": {"id": "myorg__my-agent", "versions": [{"version_num": 1, "card": {}, "diff": {"description": {"old": "old text", "new": "new text"}}, "created_at": "2026-01-01T00:00:00Z"}]}}}},
-        404: {"description": "Agent not found"},
-    },
+    response_model=AgentHistoryResponse,
+    responses={404: {"description": "Agent not found"}},
 )
 @limiter.limit("30/minute")
 async def agent_history(request: Request, agent_id: str):
@@ -433,10 +441,8 @@ async def agent_history(request: Request, agent_id: str):
     "/agents/{agent_id}",
     tags=["Registry"],
     summary="Get a single agent card",
-    responses={
-        200: {"description": "Agent card with health status"},
-        404: {"description": "Agent not found"},
-    },
+    response_model=AgentWithHealth,
+    responses={404: {"description": "Agent not found"}},
 )
 @limiter.limit("60/minute")
 async def get_agent_endpoint(request: Request, agent_id: str):
@@ -450,7 +456,12 @@ async def get_agent_endpoint(request: Request, agent_id: str):
     "/agents/{agent_id}",
     tags=["Registry"],
     summary="Remove an agent",
+    response_model=MessageResponse,
     dependencies=[Depends(require_api_key)],
+    responses={
+        401: {"description": "Missing or invalid API key"},
+        404: {"description": "Agent not found"},
+    },
 )
 async def remove_agent(agent_id: str):
     if not delete_agent(agent_id):
@@ -466,10 +477,8 @@ async def remove_agent(agent_id: str):
     "/agents/{agent_id}/click",
     tags=["Analytics"],
     summary="Log an agent click",
-    responses={
-        200: {"description": "Click recorded", "content": {"application/json": {"example": {"message": "click recorded"}}}},
-        404: {"description": "Agent not found"},
-    },
+    response_model=MessageResponse,
+    responses={404: {"description": "Agent not found"}},
 )
 @limiter.limit("60/minute")
 async def click_agent(request: Request, agent_id: str, body: ClickRequest = None):
@@ -528,10 +537,8 @@ async def review_agent(request: Request, agent_id: str, body: ReviewRequest):
     "/agents/{agent_id}/reviews",
     tags=["Analytics"],
     summary="List reviews for an agent",
-    responses={
-        200: {"description": "Reviews and average rating", "content": {"application/json": {"example": {"agent_id": "myorg__my-agent", "avg_rating": 4.5, "reviews": [{"reviewer_id": "agent-xyz", "score": 5, "comment": "Excellent", "created_at": "2026-01-01T00:00:00Z"}]}}}},
-        404: {"description": "Agent not found"},
-    },
+    response_model=AgentReviewsResponse,
+    responses={404: {"description": "Agent not found"}},
 )
 @limiter.limit("30/minute")
 async def list_agent_reviews(request: Request, agent_id: str):
@@ -546,11 +553,9 @@ async def list_agent_reviews(request: Request, agent_id: str):
     "/analytics",
     tags=["Analytics"],
     summary="Search and click analytics",
+    response_model=AnalyticsResponse,
     dependencies=[Depends(require_api_key)],
-    responses={
-        200: {"description": "Aggregated analytics", "content": {"application/json": {"example": {"top_queries": [{"query": "summarise PDF", "count": 42}], "zero_result_queries": [{"query": "unknown task", "count": 3}], "top_clicked_agents": [{"agent_id": "myorg__my-agent", "clicks": 17}]}}}},
-        401: {"description": "Missing or invalid API key"},
-    },
+    responses={401: {"description": "Missing or invalid API key"}},
 )
 async def analytics():
     """
@@ -620,7 +625,7 @@ async def search_agents(request: Request, req: SearchRequest):
 # Health
 # ---------------------------------------------------------------------------
 
-@app.get("/health", tags=["Meta"])
+@app.get("/health", tags=["Meta"], summary="Service health check", response_model=HealthResponse)
 async def health():
     return {"status": "ok", "agents": len(list_all_agents())}
 

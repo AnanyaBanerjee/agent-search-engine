@@ -161,3 +161,82 @@ class ReviewResponse(BaseModel):
     score: int
     comment: str
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Structured response models (for accurate OpenAPI / Swagger docs)
+# ---------------------------------------------------------------------------
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+class RegisterResponse(BaseModel):
+    id: str
+    message: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+    agents: int
+
+
+class AgentHealth(BaseModel):
+    status: str
+    last_checked: Optional[str] = None
+    last_seen_online: Optional[str] = None
+
+
+class AgentWithHealth(BaseModel):
+    id: str
+    registered: Optional[str] = None
+    agent_card: AgentCard
+    health: AgentHealth
+
+
+class AgentListResponse(BaseModel):
+    total: int
+    skip: int
+    limit: int
+    agents: list[AgentWithHealth]
+
+
+class VersionEntry(BaseModel):
+    version_num: int
+    card: dict
+    diff: dict
+    created_at: str
+
+
+class AgentHistoryResponse(BaseModel):
+    id: str
+    versions: list[VersionEntry]
+
+
+class ReviewEntry(BaseModel):
+    reviewer_id: str
+    score: int
+    comment: str
+    created_at: str
+
+
+class AgentReviewsResponse(BaseModel):
+    agent_id: str
+    avg_rating: Optional[float] = None
+    reviews: list[ReviewEntry]
+
+
+class QueryCount(BaseModel):
+    query: str
+    count: int
+
+
+class AgentClickCount(BaseModel):
+    agent_id: str
+    clicks: int
+
+
+class AnalyticsResponse(BaseModel):
+    top_queries: list[QueryCount]
+    zero_result_queries: list[QueryCount]
+    top_clicked_agents: list[AgentClickCount]
