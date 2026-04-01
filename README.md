@@ -132,7 +132,7 @@ score = 0.50 × semantic_similarity
       + cold_start_bonus               (+0.10 for new / unseen agents)
 ```
 
-The engine fetches a 3× enlarged candidate pool from cosine search, rerankss with all signals, then returns the top `top_k`. All weights are tunable via environment variables. See [`Agent_Engine_Optimization.md`](Agent_Engine_Optimization.md) for the full design.
+The engine fetches a 3× enlarged candidate pool from cosine search, rerankss with all signals, then returns the top `top_k`. All weights are tunable via environment variables. See [`Agent_Engine_Optimization.md`](docs/Agent_Engine_Optimization.md) for the full design.
 
 ---
 
@@ -250,7 +250,7 @@ All behaviour is controlled via environment variables:
 
 ## Further Reading
 
-- [`features.md`](features.md) — complete feature reference
-- [`Agent_Engine_Optimization.md`](Agent_Engine_Optimization.md) — ranking system design
-- [`database_choices.md`](database_choices.md) — why SQLite + PostgreSQL
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — component decisions and data flow
+- [`features.md`](docs/features.md) — complete feature reference
+- [`Agent_Engine_Optimization.md`](docs/Agent_Engine_Optimization.md) — ranking system design
+- [`database_choices.md`](docs/database_choices.md) — why SQLite + PostgreSQL
+- [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — component decisions and data flow
