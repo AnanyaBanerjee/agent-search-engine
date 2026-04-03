@@ -419,5 +419,132 @@ function renderAnalytics(data) {
 }
 
 
+/* ---- Wanted board ---- */
+let _requestsFilter = 'all';
+
+function filterRequests(status, btn) {
+  _requestsFilter = status;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadRequests();
+}
+
+async function loadRequests() {
+  const list = $('requests-list');
+  list.innerHTML = '<em>Loading…</em>';
+  const statusParam = _requestsFilter !== 'all' ? `?status=${_requestsFilter}` : '';
+  try {
+    const res = await fetch(`${API}/requests${statusParam}`);
+    const data = await res.json();
+    const reqs = data.requests || [];
+    if (!reqs.length) {
+      list.innerHTML = '<em style="color:var(--muted)">No requests yet — be the first to post one!</em>';
+      return;
+    }
+    list.innerHTML = reqs.map(r => buildRequestCard(r)).join('');
+  } catch (e) {
+    list.innerHTML = `<em style="color:#ff8080">Failed to load: ${e.message}</em>`;
+  }
+}
+
+function buildRequestCard(r) {
+  const statusClass = r.status === 'fulfilled' ? 'req-status-fulfilled' : 'req-status-open';
+  const tagsHtml = (r.tags || []).length
+    ? `<div class="tags" style="margin-top:.5rem">${r.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>`
+    : '';
+  const fulfilledBy = r.fulfilled_by
+    ? `<div class="req-meta" style="margin-top:.4rem">Fulfilled by: <code>${r.fulfilled_by}</code></div>`
+    : '';
+  const fulfillForm = r.status === 'open' ? `
+    <div class="req-fulfill-row">
+      <input id="fulfill-input-${r.id}" type="text" placeholder="Agent ID that fulfills this…" />
+      <button onclick="fulfillRequest('${r.id}')">Mark Fulfilled</button>
+    </div>` : '';
+
+  return `
+    <div class="request-card ${r.status === 'fulfilled' ? 'fulfilled' : ''}">
+      <div class="req-header">
+        <div class="req-votes" onclick="voteRequest('${r.id}', this)" title="Upvote">
+          <span class="vote-count">${r.votes}</span>
+          <span class="vote-label">▲</span>
+        </div>
+        <div class="req-title">${r.title}</div>
+        <span class="req-status-badge ${statusClass}">${r.status}</span>
+      </div>
+      <div class="req-desc">${r.description}</div>
+      <div class="req-meta">by <strong>${r.requester_id}</strong> · ${r.created_at.slice(0, 10)}</div>
+      ${tagsHtml}
+      ${fulfilledBy}
+      ${fulfillForm}
+    </div>`;
+}
+
+async function submitRequest() {
+  const msgEl = $('req-msg');
+  msgEl.className = ''; msgEl.textContent = '';
+  const body = {
+    title:        $('req-title').value.trim(),
+    description:  $('req-desc').value.trim(),
+    requester_id: $('req-requester').value.trim(),
+    tags: $('req-tags').value.trim()
+      ? $('req-tags').value.split(',').map(t => t.trim()).filter(Boolean)
+      : [],
+  };
+  if (!body.title || !body.description || !body.requester_id) {
+    msgEl.className = 'error'; msgEl.textContent = 'Title, description, and your ID are required.'; return;
+  }
+  try {
+    const res = await fetch(`${API}/requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    msgEl.className = 'success'; msgEl.textContent = '✓ Request posted!';
+    $('req-title').value = ''; $('req-desc').value = '';
+    $('req-requester').value = ''; $('req-tags').value = '';
+    loadRequests();
+  } catch (e) {
+    msgEl.className = 'error'; msgEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function voteRequest(requestId, el) {
+  const voter_id = prompt('Enter your ID or agent name to vote:');
+  if (!voter_id) return;
+  try {
+    const res = await fetch(`${API}/requests/${encodeURIComponent(requestId)}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voter_id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Error');
+    loadRequests();
+  } catch (e) {
+    alert('Vote failed: ' + e.message);
+  }
+}
+
+async function fulfillRequest(requestId) {
+  const agentId = document.getElementById(`fulfill-input-${requestId}`).value.trim();
+  if (!agentId) { alert('Enter the agent ID.'); return; }
+  try {
+    const res = await fetch(`${API}/requests/${encodeURIComponent(requestId)}/fulfill`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Error');
+    loadRequests();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+
 /* ---- Init ---- */
 loadAgents();
+loadRequests();

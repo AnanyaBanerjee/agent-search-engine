@@ -125,6 +125,22 @@ CREATE TABLE IF NOT EXISTS agent_reviews (
     UNIQUE (agent_id, reviewer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reviews_agent_id ON agent_reviews (agent_id);
+CREATE TABLE IF NOT EXISTS agent_requests (
+    id           TEXT        PRIMARY KEY,
+    title        TEXT        NOT NULL,
+    description  TEXT        NOT NULL,
+    requester_id TEXT        NOT NULL,
+    tags_json    TEXT        NOT NULL DEFAULT '[]',
+    status       TEXT        NOT NULL DEFAULT 'open',
+    fulfilled_by TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS request_votes (
+    request_id  TEXT        NOT NULL,
+    voter_id    TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (request_id, voter_id)
+);
 """
 
 _SCHEMA_SQLITE = """
@@ -182,6 +198,22 @@ CREATE TABLE IF NOT EXISTS agent_reviews (
     UNIQUE (agent_id, reviewer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reviews_agent_id ON agent_reviews (agent_id);
+CREATE TABLE IF NOT EXISTS agent_requests (
+    id           TEXT    PRIMARY KEY,
+    title        TEXT    NOT NULL,
+    description  TEXT    NOT NULL,
+    requester_id TEXT    NOT NULL,
+    tags_json    TEXT    NOT NULL DEFAULT '[]',
+    status       TEXT    NOT NULL DEFAULT 'open',
+    fulfilled_by TEXT,
+    created_at   TEXT    DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS request_votes (
+    request_id  TEXT NOT NULL,
+    voter_id    TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (request_id, voter_id)
+);
 """
 
 
@@ -1014,6 +1046,202 @@ def cosine_search(
 
     top_indices = np.argsort(scores)[::-1][:top_k]
     return [(ids[i], float(scores[i])) for i in top_indices if scores[i] > 0]
+
+
+# ---------------------------------------------------------------------------
+# Agent Wanted board
+# ---------------------------------------------------------------------------
+
+def _q(pg: str, sq: str) -> str:
+    """Return the right query string for the active backend."""
+    return pg if _USE_POSTGRES else sq
+
+
+def create_request(title: str, description: str, requester_id: str, tags: list[str]) -> dict:
+    req_id = str(uuid.uuid4())
+    tags_json = json.dumps(tags)
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO agent_requests (id, title, description, requester_id, tags_json) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING created_at",
+                (req_id, title, description, requester_id, tags_json),
+            )
+            row = cur.fetchone()
+            created_at = str(row[0])
+    else:
+        with _sqlite_conn() as conn:
+            conn.execute(
+                "INSERT INTO agent_requests (id, title, description, requester_id, tags_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (req_id, title, description, requester_id, tags_json),
+            )
+            row = conn.execute(
+                "SELECT created_at FROM agent_requests WHERE id = ?", (req_id,)
+            ).fetchone()
+            created_at = row[0]
+    return {"id": req_id, "created_at": created_at}
+
+
+def list_requests(status: str | None = None, tags: list[str] | None = None) -> list[dict]:
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT r.id, r.title, r.description, r.requester_id, r.tags_json,
+                       r.status, r.fulfilled_by, r.created_at,
+                       COUNT(v.voter_id) AS votes
+                FROM agent_requests r
+                LEFT JOIN request_votes v ON v.request_id = r.id
+                GROUP BY r.id
+                ORDER BY votes DESC, r.created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+        results = [
+            {
+                "id": r[0], "title": r[1], "description": r[2], "requester_id": r[3],
+                "tags": json.loads(r[4]), "status": r[5], "fulfilled_by": r[6],
+                "created_at": str(r[7]), "votes": r[8],
+            }
+            for r in rows
+        ]
+    else:
+        with _sqlite_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.title, r.description, r.requester_id, r.tags_json,
+                       r.status, r.fulfilled_by, r.created_at,
+                       COUNT(v.voter_id) AS votes
+                FROM agent_requests r
+                LEFT JOIN request_votes v ON v.request_id = r.id
+                GROUP BY r.id
+                ORDER BY votes DESC, r.created_at DESC
+                """
+            ).fetchall()
+        results = [
+            {
+                "id": r["id"], "title": r["title"], "description": r["description"],
+                "requester_id": r["requester_id"], "tags": json.loads(r["tags_json"]),
+                "status": r["status"], "fulfilled_by": r["fulfilled_by"],
+                "created_at": r["created_at"], "votes": r["votes"],
+            }
+            for r in rows
+        ]
+
+    # Filter by status
+    if status:
+        results = [r for r in results if r["status"] == status]
+    # Filter by tags
+    if tags:
+        tag_set = {t.lower() for t in tags}
+        results = [r for r in results if tag_set & {t.lower() for t in r["tags"]}]
+    return results
+
+
+def get_request(request_id: str) -> dict | None:
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT r.id, r.title, r.description, r.requester_id, r.tags_json,
+                       r.status, r.fulfilled_by, r.created_at,
+                       COUNT(v.voter_id) AS votes
+                FROM agent_requests r
+                LEFT JOIN request_votes v ON v.request_id = r.id
+                WHERE r.id = %s
+                GROUP BY r.id
+                """,
+                (request_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "title": row[1], "description": row[2], "requester_id": row[3],
+            "tags": json.loads(row[4]), "status": row[5], "fulfilled_by": row[6],
+            "created_at": str(row[7]), "votes": row[8],
+        }
+    else:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT r.id, r.title, r.description, r.requester_id, r.tags_json,
+                       r.status, r.fulfilled_by, r.created_at,
+                       COUNT(v.voter_id) AS votes
+                FROM agent_requests r
+                LEFT JOIN request_votes v ON v.request_id = r.id
+                WHERE r.id = ?
+                GROUP BY r.id
+                """,
+                (request_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"], "title": row["title"], "description": row["description"],
+            "requester_id": row["requester_id"], "tags": json.loads(row["tags_json"]),
+            "status": row["status"], "fulfilled_by": row["fulfilled_by"],
+            "created_at": row["created_at"], "votes": row["votes"],
+        }
+
+
+def vote_request(request_id: str, voter_id: str) -> bool:
+    """Returns True if vote was added, False if already voted."""
+    try:
+        if _USE_POSTGRES:
+            with _pg_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO request_votes (request_id, voter_id) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (request_id, voter_id),
+                )
+                return cur.rowcount > 0
+        else:
+            with _sqlite_conn() as conn:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO request_votes (request_id, voter_id) VALUES (?, ?)",
+                    (request_id, voter_id),
+                )
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+def fulfill_request(request_id: str, agent_id: str) -> bool:
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE agent_requests SET status = 'fulfilled', fulfilled_by = %s "
+                "WHERE id = %s AND status = 'open'",
+                (agent_id, request_id),
+            )
+            return cur.rowcount > 0
+    else:
+        with _sqlite_conn() as conn:
+            cur = conn.execute(
+                "UPDATE agent_requests SET status = 'fulfilled', fulfilled_by = ? "
+                "WHERE id = ? AND status = 'open'",
+                (agent_id, request_id),
+            )
+        return cur.rowcount > 0
+
+
+def delete_request(request_id: str) -> bool:
+    if _USE_POSTGRES:
+        with _pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM agent_requests WHERE id = %s", (request_id,))
+            return cur.rowcount > 0
+    else:
+        with _sqlite_conn() as conn:
+            cur = conn.execute("DELETE FROM agent_requests WHERE id = ?", (request_id,))
+        return cur.rowcount > 0
 
 
 def make_agent_id(card: AgentCard) -> str:

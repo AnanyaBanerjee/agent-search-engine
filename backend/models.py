@@ -240,3 +240,41 @@ class AnalyticsResponse(BaseModel):
     top_queries: list[QueryCount]
     zero_result_queries: list[QueryCount]
     top_clicked_agents: list[AgentClickCount]
+
+
+# ---------------------------------------------------------------------------
+# Agent Wanted board
+# ---------------------------------------------------------------------------
+
+class WantedRequest(BaseModel):
+    title: str = Field(..., min_length=5, max_length=200)
+    description: str = Field(..., min_length=10, max_length=2000)
+    requester_id: str = Field(..., min_length=1, max_length=200,
+                              description="Your agent ID, username, or any unique handle")
+    tags: list[str] = Field(default=[], max_length=10)
+
+
+class VoteRequest(BaseModel):
+    voter_id: str = Field(..., min_length=1, max_length=200,
+                          description="Your agent ID or unique handle")
+
+
+class FulfillRequest(BaseModel):
+    agent_id: str = Field(..., description="ID of the registered agent that fulfills this request")
+
+
+class WantedEntry(BaseModel):
+    id: str
+    title: str
+    description: str
+    requester_id: str
+    tags: list[str]
+    status: str
+    fulfilled_by: Optional[str]
+    created_at: str
+    votes: int
+
+
+class WantedListResponse(BaseModel):
+    total: int
+    requests: list[WantedEntry]

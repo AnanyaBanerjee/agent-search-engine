@@ -39,9 +39,12 @@ from slowapi.util import get_remote_address
 from a2a_handler import handle_jsonrpc
 from database import (
     cosine_search,
+    create_request,
     delete_agent,
+    delete_request,
     delete_stale_agents,
     diff_cards,
+    fulfill_request,
     get_agent,
     get_agent_raw,
     get_agent_reviews_list,
@@ -50,9 +53,11 @@ from database import (
     get_all_agent_urls_and_ids,
     get_analytics,
     get_ranking_signals,
+    get_request,
     init_db,
     list_all_agents,
     list_all_agents_with_health,
+    list_requests,
     log_agent_click,
     log_impressions,
     log_search,
@@ -62,6 +67,7 @@ from database import (
     update_agent_health,
     update_task_centroid,
     upsert_agent,
+    vote_request,
 )
 from models import (
     AgentCapabilities,
@@ -77,6 +83,7 @@ from models import (
     AnalyticsResponse,
     AuthScheme,
     ClickRequest,
+    FulfillRequest,
     HealthResponse,
     MessageResponse,
     RegisterRequest,
@@ -87,6 +94,10 @@ from models import (
     SearchRequest,
     SearchResponse,
     VersionEntry,
+    VoteRequest,
+    WantedEntry,
+    WantedListResponse,
+    WantedRequest,
 )
 from ranking import rerank, RERANK_POOL_MULTIPLIER
 from search import embed_agent_card, embed_text
@@ -619,6 +630,110 @@ async def search_agents(request: Request, req: SearchRequest):
         logger.warning("Failed to log search/impressions: %s", exc)
 
     return SearchResponse(query=req.query, results=results)
+
+
+# ---------------------------------------------------------------------------
+# Agent Wanted board
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/requests",
+    tags=["Wanted"],
+    summary="Post a request for a capability that doesn't exist yet",
+    response_model=WantedEntry,
+)
+@limiter.limit("10/minute")
+async def post_wanted_request(request: Request, body: WantedRequest):
+    """
+    Let the community know you need an agent for a specific task.
+    Others can upvote your request; agent builders can see what's in demand.
+    """
+    meta = create_request(body.title, body.description, body.requester_id, body.tags)
+    return {**meta, "title": body.title, "description": body.description,
+            "requester_id": body.requester_id, "tags": body.tags,
+            "status": "open", "fulfilled_by": None, "votes": 0}
+
+
+@app.get(
+    "/requests",
+    tags=["Wanted"],
+    summary="List all wanted requests",
+    response_model=WantedListResponse,
+)
+@limiter.limit("30/minute")
+async def list_wanted_requests(
+    request: Request,
+    status: str | None = None,
+    tags: str | None = None,
+):
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    results = list_requests(status=status, tags=tag_list or None)
+    return {"total": len(results), "requests": results}
+
+
+@app.get(
+    "/requests/{request_id}",
+    tags=["Wanted"],
+    summary="Get a single wanted request",
+    response_model=WantedEntry,
+    responses={404: {"description": "Request not found"}},
+)
+async def get_wanted_request(request_id: str):
+    req = get_request(request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return req
+
+
+@app.post(
+    "/requests/{request_id}/vote",
+    tags=["Wanted"],
+    summary="Upvote a wanted request",
+    response_model=MessageResponse,
+    responses={404: {"description": "Request not found"}},
+)
+@limiter.limit("20/minute")
+async def upvote_request(request: Request, request_id: str, body: VoteRequest):
+    """One vote per voter_id per request — re-submitting the same voter_id is a no-op."""
+    if get_request(request_id) is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    added = vote_request(request_id, body.voter_id)
+    return {"message": "vote recorded" if added else "already voted"}
+
+
+@app.post(
+    "/requests/{request_id}/fulfill",
+    tags=["Wanted"],
+    summary="Mark a request as fulfilled by a registered agent",
+    response_model=MessageResponse,
+    responses={
+        404: {"description": "Request or agent not found"},
+        409: {"description": "Request already fulfilled"},
+    },
+)
+async def fulfill_wanted_request(request_id: str, body: FulfillRequest):
+    if get_request(request_id) is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if get_agent(body.agent_id) is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{body.agent_id}' not found in registry")
+    updated = fulfill_request(request_id, body.agent_id)
+    if not updated:
+        raise HTTPException(status_code=409, detail="Request is already fulfilled")
+    return {"message": f"Request marked as fulfilled by '{body.agent_id}'"}
+
+
+@app.delete(
+    "/requests/{request_id}",
+    tags=["Wanted"],
+    summary="Delete a wanted request",
+    response_model=MessageResponse,
+    dependencies=[Depends(require_api_key)],
+    responses={404: {"description": "Request not found"}},
+)
+async def delete_wanted_request(request_id: str):
+    if not delete_request(request_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+    return {"message": "Request deleted"}
 
 
 # ---------------------------------------------------------------------------

@@ -97,6 +97,35 @@
       <div id="agents-list"><em>Loading…</em></div>
     </section>
 
+    <!-- Agent Wanted board -->
+    <section class="wanted-section">
+      <div class="section-header">
+        <h2>Agent Wanted Board</h2>
+        <button onclick="loadRequests()">Refresh</button>
+      </div>
+      <p class="wanted-subtitle">Need an agent that doesn't exist yet? Post a request — builders will see it.</p>
+
+      <details class="wanted-form-details">
+        <summary>+ Post a new request</summary>
+        <div class="wanted-form">
+          <input id="req-title"        type="text"  placeholder="Title — e.g. &quot;Agent that translates legal documents&quot;" />
+          <textarea id="req-desc" rows="3" placeholder="Describe what the agent should do, what inputs it takes, what outputs you expect…"></textarea>
+          <input id="req-requester"    type="text"  placeholder="Your ID / agent name" />
+          <input id="req-tags"         type="text"  placeholder="Tags: e.g. nlp, legal, translation" />
+          <button onclick="submitRequest()">Post Request</button>
+          <div id="req-msg"></div>
+        </div>
+      </details>
+
+      <div class="wanted-filters">
+        <button class="filter-btn active" onclick="filterRequests('all',   this)">All</button>
+        <button class="filter-btn"        onclick="filterRequests('open',  this)">Open</button>
+        <button class="filter-btn"        onclick="filterRequests('fulfilled', this)">Fulfilled</button>
+      </div>
+
+      <div id="requests-list"><em>Loading…</em></div>
+    </section>
+
     <!-- Analytics -->
     <section class="analytics-section">
       <details>
